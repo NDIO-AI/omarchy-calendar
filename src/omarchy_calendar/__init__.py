@@ -1,4 +1,4 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Read-only Omarchy calendar integration."""
+"""Omarchy calendar integration."""
 
-__version__ = "1.0.0"
+__version__ = "1.1.0-alpha.1"

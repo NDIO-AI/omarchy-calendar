@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sqlite3
 from pathlib import Path
 from typing import Iterable
 
-from .models import Event, ProviderHealth
+from .models import Calendar, Event, ProviderHealth
 
 
 EVENT_COLUMNS = (
@@ -29,6 +30,26 @@ EVENT_COLUMNS = (
     "meeting_url",
     "provider_url",
     "updated",
+    "provider_event_id",
+    "revision",
+    "timezone",
+    "recurrence_id",
+    "recurrence",
+    "event_type",
+    "organizer_owned",
+)
+
+CALENDAR_COLUMNS = (
+    "provider",
+    "account_id",
+    "account_label",
+    "calendar_id",
+    "name",
+    "color",
+    "timezone",
+    "writable",
+    "owned",
+    "meeting_providers",
 )
 
 
@@ -61,7 +82,14 @@ class CalendarStore:
               organizer TEXT NOT NULL,
               meeting_url TEXT NOT NULL,
               provider_url TEXT NOT NULL,
-              updated TEXT NOT NULL
+              updated TEXT NOT NULL,
+              provider_event_id TEXT NOT NULL DEFAULT '',
+              revision TEXT NOT NULL DEFAULT '',
+              timezone TEXT NOT NULL DEFAULT '',
+              recurrence_id TEXT NOT NULL DEFAULT '',
+              recurrence TEXT NOT NULL DEFAULT '[]',
+              event_type TEXT NOT NULL DEFAULT 'single',
+              organizer_owned INTEGER NOT NULL DEFAULT 0 CHECK (organizer_owned IN (0, 1))
             );
             CREATE INDEX IF NOT EXISTS events_window
               ON events (start, end);
@@ -79,9 +107,52 @@ class CalendarStore:
               skipped INTEGER NOT NULL,
               PRIMARY KEY (provider, account_id)
             );
+            CREATE TABLE IF NOT EXISTS calendars (
+              provider TEXT NOT NULL,
+              account_id TEXT NOT NULL,
+              account_label TEXT NOT NULL,
+              calendar_id TEXT NOT NULL,
+              name TEXT NOT NULL,
+              color TEXT NOT NULL,
+              timezone TEXT NOT NULL,
+              writable INTEGER NOT NULL CHECK (writable IN (0, 1)),
+              owned INTEGER NOT NULL CHECK (owned IN (0, 1)),
+              meeting_providers TEXT NOT NULL,
+              PRIMARY KEY (provider, account_id, calendar_id)
+            );
+            """
+        )
+        self._migrate_events()
+        self.connection.execute(
+            """
+            INSERT OR IGNORE INTO calendars
+              (provider, account_id, account_label, calendar_id, name, color,
+               timezone, writable, owned, meeting_providers)
+            SELECT provider, account_id, account_label, calendar_id,
+                   calendar_name, calendar_color, '', 0, 0, '[]'
+              FROM events
+             GROUP BY provider, account_id, calendar_id
             """
         )
         self.connection.commit()
+
+    def _migrate_events(self) -> None:
+        existing = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(events)").fetchall()
+        }
+        additions = {
+            "provider_event_id": "TEXT NOT NULL DEFAULT ''",
+            "revision": "TEXT NOT NULL DEFAULT ''",
+            "timezone": "TEXT NOT NULL DEFAULT ''",
+            "recurrence_id": "TEXT NOT NULL DEFAULT ''",
+            "recurrence": "TEXT NOT NULL DEFAULT '[]'",
+            "event_type": "TEXT NOT NULL DEFAULT 'single'",
+            "organizer_owned": "INTEGER NOT NULL DEFAULT 0 CHECK (organizer_owned IN (0, 1))",
+        }
+        for name, declaration in additions.items():
+            if name not in existing:
+                self.connection.execute(f"ALTER TABLE events ADD COLUMN {name} {declaration}")
 
     def close(self) -> None:
         self.connection.close()
@@ -100,10 +171,33 @@ class CalendarStore:
         end: str,
         events: Iterable[Event],
         health: ProviderHealth,
+        *,
+        calendars: Iterable[Calendar] | None = None,
     ) -> None:
         if health.provider != provider or health.account_id != account_id:
             raise ValueError("provider health does not match replacement account")
-        rows = [self._event_values(event) for event in events]
+        event_list = list(events)
+        rows = [self._event_values(event) for event in event_list]
+        if calendars is None:
+            derived = {
+                event.calendar_id: Calendar(
+                    provider=event.provider,
+                    account_id=event.account_id,
+                    account_label=event.account_label,
+                    calendar_id=event.calendar_id,
+                    name=event.calendar_name,
+                    color=event.calendar_color,
+                    timezone=event.timezone,
+                    writable=False,
+                    owned=False,
+                )
+                for event in event_list
+            }
+            calendar_rows = [self._calendar_values(item) for item in derived.values()]
+            replace_calendars = False
+        else:
+            calendar_rows = [self._calendar_values(item) for item in calendars]
+            replace_calendars = True
         with self.connection:
             self.connection.execute(
                 """
@@ -118,6 +212,28 @@ class CalendarStore:
                 f"INSERT OR REPLACE INTO events ({', '.join(EVENT_COLUMNS)}) VALUES ({', '.join('?' for _ in EVENT_COLUMNS)})",
                 rows,
             )
+            if replace_calendars:
+                self.connection.execute(
+                    "DELETE FROM calendars WHERE provider = ? AND account_id = ?",
+                    (provider, account_id),
+                )
+                self.connection.executemany(
+                    f"INSERT INTO calendars ({', '.join(CALENDAR_COLUMNS)}) VALUES ({', '.join('?' for _ in CALENDAR_COLUMNS)})",
+                    calendar_rows,
+                )
+            else:
+                self.connection.executemany(
+                    f"""
+                    INSERT INTO calendars ({', '.join(CALENDAR_COLUMNS)})
+                    VALUES ({', '.join('?' for _ in CALENDAR_COLUMNS)})
+                    ON CONFLICT(provider, account_id, calendar_id) DO UPDATE SET
+                      account_label=excluded.account_label,
+                      name=excluded.name,
+                      color=excluded.color,
+                      timezone=excluded.timezone
+                    """,
+                    calendar_rows,
+                )
             self.connection.execute(
                 """
                 INSERT INTO provider_health
@@ -151,23 +267,13 @@ class CalendarStore:
         ).fetchall()
         calendar_rows = self.connection.execute(
             """
-            WITH ranked AS (
-              SELECT provider, account_id, account_label, calendar_id,
-                     calendar_name, calendar_color,
-                     COUNT(*) OVER (
-                       PARTITION BY provider, account_id, calendar_id
-                     ) AS event_count,
-                     ROW_NUMBER() OVER (
-                       PARTITION BY provider, account_id, calendar_id
-                       ORDER BY julianday(updated) DESC, rowid DESC
-                     ) AS metadata_rank
-                FROM events
-            )
-            SELECT provider, account_id, account_label, calendar_id,
-                   calendar_name, calendar_color, event_count
-              FROM ranked
-             WHERE metadata_rank = 1
-             ORDER BY provider, calendar_name COLLATE NOCASE, account_label COLLATE NOCASE
+            SELECT c.*,
+                   (SELECT COUNT(*) FROM events e
+                     WHERE e.provider = c.provider
+                       AND e.account_id = c.account_id
+                       AND e.calendar_id = c.calendar_id) AS event_count
+              FROM calendars c
+             ORDER BY c.provider, c.name COLLATE NOCASE, c.account_label COLLATE NOCASE
             """
         ).fetchall()
         providers = [self._public_health(row) for row in health_rows]
@@ -188,6 +294,10 @@ class CalendarStore:
                     "DELETE FROM events WHERE provider = ? AND account_id = ?",
                     (row["provider"], row["account_id"]),
                 )
+                self.connection.execute(
+                    "DELETE FROM calendars WHERE provider = ? AND account_id = ?",
+                    (row["provider"], row["account_id"]),
+                )
             self.connection.execute("DELETE FROM provider_health WHERE demo = 1")
         return len(accounts)
 
@@ -196,6 +306,7 @@ class CalendarStore:
         providers = int(self.connection.execute("SELECT COUNT(*) FROM provider_health").fetchone()[0])
         with self.connection:
             self.connection.execute("DELETE FROM events")
+            self.connection.execute("DELETE FROM calendars")
             self.connection.execute("DELETE FROM provider_health")
         return {"events": events, "providers": providers}
 
@@ -270,10 +381,60 @@ class CalendarStore:
         row = self.connection.execute("SELECT * FROM events WHERE uid = ?", (uid,)).fetchone()
         return self._public_event(row) if row is not None else None
 
+    def get_calendar(self, key: str) -> Calendar | None:
+        for row in self.connection.execute("SELECT * FROM calendars").fetchall():
+            if self._calendar_key(row) == key:
+                return Calendar(
+                    provider=row["provider"],
+                    account_id=row["account_id"],
+                    account_label=row["account_label"],
+                    calendar_id=row["calendar_id"],
+                    name=row["name"],
+                    color=row["color"],
+                    timezone=row["timezone"],
+                    writable=bool(row["writable"]),
+                    owned=bool(row["owned"]),
+                    meeting_providers=tuple(self._json_list(row["meeting_providers"])),
+                )
+        return None
+
+    def upsert_event(self, event: Event) -> None:
+        with self.connection:
+            self.connection.execute(
+                f"INSERT OR REPLACE INTO events ({', '.join(EVENT_COLUMNS)}) VALUES ({', '.join('?' for _ in EVENT_COLUMNS)})",
+                self._event_values(event),
+            )
+
+    def remove_event(self, uid: str, *, series_id: str = "") -> int:
+        with self.connection:
+            source = self.connection.execute(
+                "SELECT provider, account_id, calendar_id FROM events WHERE uid = ?",
+                (uid,),
+            ).fetchone()
+            if series_id and source is not None:
+                cursor = self.connection.execute(
+                    """
+                    DELETE FROM events
+                     WHERE provider = ? AND account_id = ? AND calendar_id = ?
+                       AND (uid = ? OR recurrence_id = ? OR provider_event_id = ?)
+                    """,
+                    (
+                        source["provider"], source["account_id"], source["calendar_id"],
+                        uid, series_id, series_id,
+                    ),
+                )
+            else:
+                cursor = self.connection.execute("DELETE FROM events WHERE uid = ?", (uid,))
+        return cursor.rowcount
+
     def remove_account(self, provider: str, account_id: str) -> int:
         with self.connection:
             self.connection.execute(
                 "DELETE FROM events WHERE provider = ? AND account_id = ?",
+                (provider, account_id),
+            )
+            self.connection.execute(
+                "DELETE FROM calendars WHERE provider = ? AND account_id = ?",
                 (provider, account_id),
             )
             cursor = self.connection.execute(
@@ -286,7 +447,17 @@ class CalendarStore:
     def _event_values(event: Event) -> tuple[object, ...]:
         data = event.to_dict()
         data["all_day"] = int(event.all_day)
+        data["organizer_owned"] = int(event.organizer_owned)
+        data["recurrence"] = json.dumps(event.recurrence, separators=(",", ":"))
         return tuple(data[column] for column in EVENT_COLUMNS)
+
+    @staticmethod
+    def _calendar_values(calendar: Calendar) -> tuple[object, ...]:
+        data = calendar.to_dict()
+        data["writable"] = int(calendar.writable)
+        data["owned"] = int(calendar.owned)
+        data["meeting_providers"] = json.dumps(calendar.meeting_providers, separators=(",", ":"))
+        return tuple(data[column] for column in CALENDAR_COLUMNS)
 
     @staticmethod
     def _health_values(health: ProviderHealth) -> tuple[object, ...]:
@@ -305,9 +476,10 @@ class CalendarStore:
     @staticmethod
     def _public_event(row: sqlite3.Row) -> dict[str, object]:
         result = {
-            column: bool(row[column]) if column == "all_day" else row[column]
+            column: bool(row[column]) if column in ("all_day", "organizer_owned") else row[column]
             for column in EVENT_COLUMNS
         }
+        result["recurrence"] = CalendarStore._json_list(result["recurrence"])
         result["calendar_key"] = CalendarStore._calendar_key(row)
         return result
 
@@ -316,11 +488,24 @@ class CalendarStore:
         return {
             "key": CalendarStore._calendar_key(row),
             "provider": row["provider"],
+            "account_id": row["account_id"],
             "account_label": row["account_label"],
-            "name": row["calendar_name"],
-            "color": row["calendar_color"],
+            "name": row["name"],
+            "color": row["color"],
             "event_count": int(row["event_count"]),
+            "timezone": row["timezone"],
+            "writable": bool(row["writable"]),
+            "owned": bool(row["owned"]),
+            "meeting_providers": CalendarStore._json_list(row["meeting_providers"]),
         }
+
+    @staticmethod
+    def _json_list(value: object) -> list[str]:
+        try:
+            parsed = json.loads(str(value or "[]"))
+        except json.JSONDecodeError:
+            return []
+        return [str(item) for item in parsed] if isinstance(parsed, list) else []
 
     @staticmethod
     def _calendar_key(row: sqlite3.Row) -> str:

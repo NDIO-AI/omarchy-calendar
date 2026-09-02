@@ -6,7 +6,7 @@ from typing import Any
 from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from ..models import Account, Event
+from ..models import Account, Calendar, Event
 from ..normalize import extract_meeting_url, is_recognized_meeting_url, is_safe_https_url, plain_text
 
 
@@ -76,6 +76,37 @@ def normalize_google_event(
         meeting_url=_conference_url(raw),
         provider_url=provider_url,
         updated=str(raw.get("updated") or ""),
+        provider_event_id=event_id,
+        revision=str(raw.get("etag") or ""),
+        timezone=str((raw.get("start") or {}).get("timeZone") or calendar.get("timeZone") or "UTC"),
+        recurrence_id=str(raw.get("recurringEventId") or ""),
+        recurrence=tuple(str(item) for item in raw.get("recurrence", []) if item),
+        event_type=(
+            "occurrence" if raw.get("recurringEventId")
+            else "series" if raw.get("recurrence")
+            else "single"
+        ),
+        organizer_owned=bool(organizer.get("self")) or str(organizer.get("email") or "").casefold() == account.label.casefold(),
+    )
+
+
+def normalize_google_calendar(raw: dict[str, Any], account: Account) -> Calendar:
+    access_role = str(raw.get("accessRole") or "reader")
+    providers = tuple(
+        "googleMeet" if item == "hangoutsMeet" else str(item)
+        for item in (raw.get("conferenceProperties") or {}).get("allowedConferenceSolutionTypes", [])
+    )
+    return Calendar(
+        provider="google",
+        account_id=account.account_id,
+        account_label=account.label,
+        calendar_id=str(raw.get("id") or ""),
+        name=str(raw.get("summary") or "Google Calendar"),
+        color=str(raw.get("backgroundColor") or "#7aa2f7"),
+        timezone=str(raw.get("timeZone") or "UTC"),
+        writable=access_role in ("writer", "owner"),
+        owned=access_role == "owner",
+        meeting_providers=providers,
     )
 
 
@@ -83,7 +114,7 @@ class GoogleProvider:
     def __init__(self, http: Any):
         self.http = http
 
-    def fetch_window(self, token: str, start: str, end: str) -> tuple[Account, list[Event]]:
+    def fetch_window(self, token: str, start: str, end: str) -> tuple[Account, list[Calendar], list[Event]]:
         headers = {"Authorization": f"Bearer {token}"}
         identity = self.http.get_json(GOOGLE_USERINFO, headers=headers)
         account = Account(
@@ -91,13 +122,14 @@ class GoogleProvider:
             account_id=str(identity["sub"]),
             label=str(identity.get("email") or "Google"),
         )
-        calendars = self._calendar_list(headers)
+        raw_calendars = self._calendar_list(headers)
+        calendars = [normalize_google_calendar(item, account) for item in raw_calendars]
         events: list[Event] = []
-        for calendar in calendars:
+        for calendar in raw_calendars:
             if calendar.get("selected") is False or calendar.get("deleted") is True:
                 continue
             events.extend(self._events(calendar, account, headers, start, end))
-        return account, events
+        return account, calendars, events
 
     def _calendar_list(self, headers: dict[str, str]) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []

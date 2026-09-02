@@ -56,9 +56,17 @@ class SyncEngine:
                     raise HttpError(401, "Calendar credentials are missing")
                 token = self._refresh_if_needed(name, account_id, token)
                 start, end = self.window()
-                live_account, events = self.providers[name].fetch_window(str(token["access_token"]), start, end)
+                fetched = self.providers[name].fetch_window(str(token["access_token"]), start, end)
+                if len(fetched) == 3:
+                    live_account, calendars, events = fetched
+                else:
+                    live_account, events = fetched
+                    calendars = None
                 health = ProviderHealth.ok(name, live_account.account_id, self.now().isoformat())
-                self.store.replace_window(name, live_account.account_id, start, end, events, health)
+                self.store.replace_window(
+                    name, live_account.account_id, start, end, events, health,
+                    calendars=calendars,
+                )
                 result["synced"] = int(result["synced"]) + 1
                 result["accounts"].append({"provider": name, "account_id": live_account.account_id, "events": len(events)})
             except HttpError as error:

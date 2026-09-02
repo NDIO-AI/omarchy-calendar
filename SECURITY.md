@@ -12,7 +12,8 @@ Include the affected version, exact local steps, expected behavior, observed beh
 
 ## Security invariants
 
-- Provider access stays read-only.
+- Provider access stays read-only unless the user grants the optional event-editing scope for an account.
+- Event writes are limited to owned calendars, use a separate route allowlist, and occur only after an explicit save or confirmed deletion.
 - OAuth uses PKCE S256 and verifies state.
 - Tokens stay in Secret Service, never dotfiles.
 - Event and meeting actions allow safe HTTPS URLs only and never invoke a shell.

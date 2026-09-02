@@ -17,9 +17,9 @@ Rectangle {
 
   readonly property var groups: [
     { title: "Calendar", rows: [["t / w", "Today or Week"], ["h / l", "Overlap lane, then day"], ["j / k", "Up or down through events"], ["[ / ]", "Previous or next period"], ["g", "Now and nearest event"]] },
-    { title: "Actions", rows: [["Enter", "Toggle details"], ["m", "Join meeting"], ["o", "Open source event"], ["r", "Refresh calendars"]] },
+    { title: "Actions", rows: [["Enter", "Toggle details"], ["m", "Join meeting"], ["o", "Open source event"], ["r", "Refresh calendars"], ["?", "Toggle help"]] },
+    { title: "Editing", rows: [["n", "New event"], ["e", "Edit selected event"], ["d", "Duplicate selected event"], ["Ctrl+Enter", "Save draft"], ["Escape", "Cancel draft"]] },
     { title: "Settings and accounts", rows: [["s", "Open Settings"], ["c", "Open Calendars"], ["h / l", "Move between sections"], ["j / k", "Move between controls"], ["Enter / Space", "Activate control"], ["a", "Apply settings"]] },
-    { title: "Panel", rows: [["?", "Toggle help"], ["Escape", "Cancel or close"]] }
   ]
 
   Column {

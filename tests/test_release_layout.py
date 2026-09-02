@@ -139,7 +139,7 @@ class ReleaseLayoutTests(unittest.TestCase):
             ROOT,
             release_root,
             ignore=shutil.ignore_patterns(
-                ".ai", ".git", ".private", ".superpowers", "__pycache__", "*.pyc"
+                ".ai", ".git", ".private", ".quality", ".superpowers", "__pycache__", "*.pyc"
             ),
         )
         for test_module in (release_root / "tests").glob("test_*.py"):
@@ -315,7 +315,7 @@ class ReleaseLayoutTests(unittest.TestCase):
                 ROOT,
                 release_root,
                 ignore=shutil.ignore_patterns(
-                    ".git", ".private", ".superpowers", "__pycache__", "*.pyc"
+                    ".git", ".private", ".quality", ".superpowers", "__pycache__", "*.pyc"
                 ),
             )
             for test_module in ("test_docs.py", "test_release_layout.py"):
@@ -349,7 +349,7 @@ class ReleaseLayoutTests(unittest.TestCase):
                 ROOT,
                 release_root,
                 ignore=shutil.ignore_patterns(
-                    ".git", ".private", ".superpowers", "__pycache__", "*.pyc"
+                    ".git", ".private", ".quality", ".superpowers", "__pycache__", "*.pyc"
                 ),
             )
             for test_module in ("test_docs.py", "test_release_layout.py"):
@@ -454,14 +454,14 @@ class ReleaseLayoutTests(unittest.TestCase):
         manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-        self.assertEqual(manifest["version"], "1.0.0")
-        self.assertEqual(project["project"]["version"], "1.0.0")
-        self.assertEqual(__version__, "1.0.0")
+        self.assertEqual(manifest["version"], "1.1.0-alpha.1")
+        self.assertEqual(project["project"]["version"], "1.1.0-alpha.1")
+        self.assertEqual(__version__, "1.1.0-alpha.1")
         self.assertNotIn(
             "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
             project["project"]["classifiers"],
         )
-        self.assertIn("Flight Deck Calendar  1.0.0", (ROOT / "SettingsView.qml").read_text(encoding="utf-8"))
+        self.assertIn("Flight Deck Calendar  1.1.0-alpha.1", (ROOT / "SettingsView.qml").read_text(encoding="utf-8"))
         self.assertNotIn("RC", (ROOT / "SettingsView.qml").read_text(encoding="utf-8"))
 
     def test_stable_release_requires_bundled_provider_registrations(self):

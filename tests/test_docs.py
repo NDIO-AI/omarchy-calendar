@@ -295,6 +295,27 @@ class DocumentationTests(unittest.TestCase):
         ):
             self.assertNotIn(retired, guide)
 
+    def test_write_layer_docs_keep_read_only_default_and_explain_opt_in_changes(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        install = (ROOT / "docs" / "INSTALL.md").read_text(encoding="utf-8")
+        privacy = (ROOT / "PRIVACY.md").read_text(encoding="utf-8")
+        documentation = readme + install + privacy
+
+        for required in (
+            "read-only by default",
+            "calendar.events.owned",
+            "Calendars.ReadWrite",
+            "calendarctl enable-editing",
+            "Only changes confirmed with Save are sent to the provider.",
+            "Copying an event to another calendar does not delete the original event.",
+        ):
+            self.assertIn(required, documentation)
+        self.assertIn("## Optional event editing", readme)
+        self.assertIn("## Enable optional event editing", install)
+        self.assertIn("opt in to event editing", privacy)
+        self.assertNotIn("There are no write scopes or calendar mutation commands.", documentation)
+        self.assertNotIn("There is no `Calendars.ReadWrite` scope and no mutation command.", documentation)
+
     def test_canonical_dataset_has_complete_non_alt_calendar_contract(self):
         data = json.loads(GUIDE_DATA.read_text(encoding="utf-8"))
         self.assertTrue(any(item["id"] == "calendar" for item in data["surfaces"]))

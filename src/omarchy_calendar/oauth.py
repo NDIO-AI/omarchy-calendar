@@ -17,6 +17,9 @@ GOOGLE_SCOPES = (
     "https://www.googleapis.com/auth/calendar.events.readonly",
     "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
 )
+GOOGLE_EDIT_SCOPES = GOOGLE_SCOPES + (
+    "https://www.googleapis.com/auth/calendar.events.owned",
+)
 
 MICROSOFT_SCOPES = (
     "openid",
@@ -25,6 +28,7 @@ MICROSOFT_SCOPES = (
     "User.Read",
     "Calendars.Read",
 )
+MICROSOFT_EDIT_SCOPES = MICROSOFT_SCOPES + ("Calendars.ReadWrite",)
 
 
 class OAuthError(RuntimeError):
@@ -81,7 +85,11 @@ def authorization_url(
     client_id: str,
     redirect_uri: str,
     flow: OAuthFlow,
+    *,
+    access: str = "read",
 ) -> str:
+    if access not in ("read", "edit"):
+        raise ValueError(f"unsupported calendar access: {access}")
     common = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -92,14 +100,14 @@ def authorization_url(
     }
     if provider == "google":
         common.update({
-            "scope": " ".join(GOOGLE_SCOPES),
+            "scope": " ".join(GOOGLE_EDIT_SCOPES if access == "edit" else GOOGLE_SCOPES),
             "access_type": "offline",
             "prompt": "consent",
         })
         base = "https://accounts.google.com/o/oauth2/v2/auth"
     elif provider == "microsoft":
         common.update({
-            "scope": " ".join(MICROSOFT_SCOPES),
+            "scope": " ".join(MICROSOFT_EDIT_SCOPES if access == "edit" else MICROSOFT_SCOPES),
             "response_mode": "query",
         })
         base = "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize"

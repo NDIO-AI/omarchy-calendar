@@ -58,6 +58,12 @@ class GoogleProviderTests(unittest.TestCase):
         self.assertEqual(result.provider_url, raw["htmlLink"])
         self.assertEqual(result.description, "Review the selected direction.")
         self.assertEqual(result.uid, "google:google-subject:primary@example.com:event-1")
+        self.assertEqual(result.provider_event_id, "event-1")
+        self.assertEqual(result.revision, '"google-etag-1"')
+        self.assertEqual(result.timezone, "America/Chicago")
+        self.assertEqual(result.recurrence_id, "series-1")
+        self.assertEqual(result.event_type, "occurrence")
+        self.assertTrue(result.organizer_owned)
 
     def test_all_day_event_uses_calendar_timezone_and_cancelled_is_skipped(self):
         items = load_fixture("google-events.json")["items"]
@@ -73,11 +79,16 @@ class GoogleProviderTests(unittest.TestCase):
         http = FakeHttp()
         provider = GoogleProvider(http)
 
-        account, events = provider.fetch_window(
+        account, calendars, events = provider.fetch_window(
             "access-token", "2026-08-25T00:00:00Z", "2026-08-27T00:00:00Z"
         )
 
         self.assertEqual(account, ACCOUNT)
+        self.assertEqual(len(calendars), 2)
+        self.assertTrue(calendars[0].writable)
+        self.assertTrue(calendars[0].owned)
+        self.assertEqual(calendars[0].meeting_providers, ("googleMeet",))
+        self.assertEqual(calendars[0].timezone, "America/Chicago")
         self.assertEqual(len(events), 4)
         self.assertTrue(any("pageToken=cal-page-2" in url for url in http.urls))
         self.assertGreaterEqual(sum("pageToken=event-page-2" in url for url in http.urls), 2)

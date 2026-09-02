@@ -30,7 +30,7 @@ To try the built-in offline dataset before connecting an account:
 
 Press `c`, choose Google Calendar or Outlook.com, review the requested read-only access, and choose **Connect in browser**. Complete provider consent in the browser, then return to Flight Deck. A successful first sync populates Today and Week.
 
-Google requests identity plus `calendar.events.readonly` and `calendar.calendarlist.readonly`. Personal Outlook.com uses Microsoft `/consumers` and requests identity, profile, offline access, `User.Read`, and `Calendars.Read`. There are no write scopes or calendar mutation commands.
+Google requests identity plus `calendar.events.readonly` and `calendar.calendarlist.readonly`. Personal Outlook.com uses Microsoft `/consumers` and requests identity, profile, offline access, `User.Read`, and `Calendars.Read`. Both accounts are read-only by default.
 
 ### Advanced provider override
 
@@ -52,6 +52,21 @@ calendarctl auth microsoft
 
 After an override is configured, connect through the same browser flow. See [the installation guide](docs/INSTALL.md) for the exact setup and removal behavior.
 
+## Optional event editing
+
+Event editing is opt-in for each account. Existing accounts and new connections remain read-only until the user chooses **Read and edit**. Google then requests `calendar.events.owned`; Outlook requests `Calendars.ReadWrite`.
+
+The Week view can create, edit, duplicate, move, resize, and delete events on calendars that the connected account owns. Only changes confirmed with Save are sent to the provider. Deletion always requires confirmation.
+
+Changing the calendar while editing creates and verifies a copy in the destination calendar. Copying an event to another calendar does not delete the original event. After a verified copy, Flight Deck offers a separate Delete original action.
+
+The same permission upgrade is available from the terminal:
+
+```bash
+calendarctl enable-editing google
+calendarctl enable-editing microsoft
+```
+
 ## Keyboard map
 
 | Key | Action |
@@ -64,6 +79,12 @@ After an override is configured, connect through the same browser flow. See [the
 | `Enter` | Expand or collapse selected details; activate a setting |
 | `m` | Open the selected meeting link |
 | `o` | Open the source event at Google or Outlook |
+| `n` | Create an event at the selected day and time |
+| `e` | Edit the selected event |
+| `d` | Duplicate the selected event into a local draft |
+| `h` / `l` in the editor | Change the selected field value |
+| `j` / `k` in the editor | Move between fields |
+| `Ctrl+Enter` in the editor | Save the current draft |
 | `r` | Refresh providers |
 | `c` | Open Settings at Calendars |
 | `s` | Open Settings at Appearance |
@@ -146,7 +167,7 @@ Example:
 - Calendar visibility: opaque local selector keys in the Omarchy inline settings; names and account IDs remain in the local cache
 - Optional local developer client IDs: `~/.config/omarchy-calendar/providers.json`, mode `0600`
 - Telemetry, analytics, AI, and hosted backend: none
-- Calendar writes: none
+- Calendar writes: disabled until the account opts in; only an explicit Save sends a change
 
 Disconnect removes that provider's tokens and cached events immediately. `Reset local data` uses two-step confirmation and removes every provider token, cached event, health record, and local provider override while preserving appearance settings. Bundled public registration metadata remains part of the installed plugin. Read [PRIVACY.md](PRIVACY.md) for the complete lifecycle.
 
@@ -202,4 +223,4 @@ Before a public artifact or tag, run:
 scripts/check --release
 ```
 
-Flight Deck Calendar is licensed under GPL-3.0-or-later. Contributions should retain SPDX headers and the read-only, local-storage constraints.
+Flight Deck Calendar is licensed under GPL-3.0-or-later. Contributions should retain SPDX headers, the read-only default, and the local-storage constraints.

@@ -18,6 +18,7 @@ cd "$project_root"
 python -m unittest discover -s tests -v
 node tests/test_calendar_model.mjs
 node tests/test_settings_model.mjs
+node tests/test_event_editor_model.mjs
 
 qml_linter=$(command -v qmllint || true)
 if [[ -z $qml_linter && -x /usr/lib/qt6/bin/qmllint ]]; then
@@ -58,7 +59,7 @@ failures: list[str] = []
 tracked_files = set(
     subprocess.check_output(["git", "ls-files", "-z"], cwd=root, text=True).split("\0")
 )
-internal_directories = {".ai", ".private", ".superpowers"}
+internal_directories = {".ai", ".private", ".quality", ".superpowers"}
 
 
 def scan_path(path: Path) -> bool:

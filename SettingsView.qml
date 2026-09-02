@@ -330,7 +330,7 @@ Rectangle {
                   width: parent.width - Style.space(190)
                   spacing: Style.space(5)
                   Text { textFormat: Text.PlainText; text: String(modelData.label || modelData.provider); color: root.palette.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body * root.textScale; font.bold: true }
-                  Text { textFormat: Text.PlainText; text: modelData.connected ? "Connected and read-only" : modelData.client_configured ? "Ready to connect" : "Local developer registration needed"; color: modelData.connected ? root.palette.positive : root.palette.muted; font.family: root.fontFamily; font.pixelSize: Style.font.caption * root.textScale }
+                  Text { textFormat: Text.PlainText; text: modelData.connected ? modelData.editing ? "Connected with editing" : "Connected and read-only" : modelData.client_configured ? "Ready to connect" : "Local developer registration needed"; color: modelData.connected ? root.palette.positive : root.palette.muted; font.family: root.fontFamily; font.pixelSize: Style.font.caption * root.textScale }
                   Text { textFormat: Text.PlainText; width: parent.width; text: modelData.connected ? CalendarModel.updateStatus([modelData], new Date()) : "No live sync yet"; color: modelData.stale ? root.palette.urgent : root.palette.muted; font.family: root.fontFamily; font.pixelSize: Style.font.caption * root.textScale; elide: Text.ElideRight }
                 }
 
@@ -688,9 +688,9 @@ Rectangle {
                 anchors.fill: parent
                 anchors.margins: Style.space(14)
                 spacing: Style.space(8)
-                Text { textFormat: Text.PlainText; text: "Flight Deck Calendar  1.0.0"; color: root.palette.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body * root.textScale; font.bold: true }
-                Text { textFormat: Text.PlainText; width: parent.width; text: "Flight Deck Calendar puts Google Calendar and Outlook in one read-only Omarchy panel. It has no hosted backend, telemetry, analytics, or AI."; color: root.palette.muted; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall * root.textScale; wrapMode: Text.Wrap }
-                Text { textFormat: Text.PlainText; width: parent.width; text: "Scopes\nGoogle: identity, calendar lists, and events read-only\nMicrosoft: identity, profile, and Calendars.Read\n\nStorage\nOAuth tokens: Secret Service keyring\nCalendar data: local SQLite cache"; color: root.palette.muted; font.family: root.fontFamily; font.pixelSize: Style.font.caption * root.textScale; lineHeight: 1.35; wrapMode: Text.Wrap }
+                Text { textFormat: Text.PlainText; text: "Flight Deck Calendar  1.1.0-alpha.1"; color: root.palette.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body * root.textScale; font.bold: true }
+                Text { textFormat: Text.PlainText; width: parent.width; text: "Flight Deck Calendar puts Google Calendar and Outlook in one Omarchy panel. Accounts are read-only by default. It has no hosted backend, telemetry, analytics, or AI."; color: root.palette.muted; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall * root.textScale; wrapMode: Text.Wrap }
+                Text { textFormat: Text.PlainText; width: parent.width; text: "Scopes\nGoogle: identity, calendar lists, and events read-only; optional calendar.events.owned\nMicrosoft: identity, profile, and Calendars.Read; optional Calendars.ReadWrite\n\nStorage\nOAuth tokens: Secret Service keyring\nCalendar data: local SQLite cache"; color: root.palette.muted; font.family: root.fontFamily; font.pixelSize: Style.font.caption * root.textScale; lineHeight: 1.35; wrapMode: Text.Wrap }
               }
             }
 

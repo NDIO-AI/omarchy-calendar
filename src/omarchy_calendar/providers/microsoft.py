@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
-from ..models import Account, Event
+from ..models import Account, Calendar, Event
 from ..normalize import extract_meeting_url, is_safe_https_url, plain_text
 
 
@@ -46,12 +48,35 @@ _WINDOWS_ZONES = {
 }
 
 
+def _zone(name: str):
+    mapped = _WINDOWS_ZONES.get(name)
+    if mapped is not None:
+        return mapped
+    try:
+        return ZoneInfo(name)
+    except (KeyError, ValueError):
+        return timezone.utc
+
+
+def local_timezone_name() -> str:
+    configured = os.environ.get("TZ", "").lstrip(":")
+    if configured:
+        try:
+            ZoneInfo(configured)
+            return configured
+        except (KeyError, ValueError):
+            pass
+    try:
+        return str(Path("/etc/localtime").resolve().relative_to("/usr/share/zoneinfo"))
+    except (OSError, ValueError):
+        return "UTC"
+
+
 def _graph_time(value: dict[str, Any]) -> str:
     raw = str(value.get("dateTime") or "")
     parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
-        zone = _WINDOWS_ZONES.get(str(value.get("timeZone") or "UTC"), timezone.utc)
-        parsed = parsed.replace(tzinfo=zone)
+        parsed = parsed.replace(tzinfo=_zone(str(value.get("timeZone") or "UTC")))
     return parsed.isoformat()
 
 
@@ -100,17 +125,55 @@ def normalize_microsoft_event(
         meeting_url=_meeting_url(raw),
         provider_url=provider_url,
         updated=str(raw.get("lastModifiedDateTime") or ""),
+        provider_event_id=event_id,
+        revision=str(raw.get("changeKey") or ""),
+        timezone=str((raw.get("start") or {}).get("timeZone") or "UTC"),
+        recurrence_id=str(raw.get("seriesMasterId") or ""),
+        event_type=(
+            "occurrence" if str(raw.get("type") or "") in ("occurrence", "exception")
+            else "series" if str(raw.get("type") or "") == "seriesMaster"
+            else "single"
+        ),
+        organizer_owned=str(organizer.get("address") or "").casefold() == account.label.casefold(),
+    )
+
+
+def normalize_microsoft_calendar(
+    raw: dict[str, Any], account: Account, timezone_name: str = "UTC",
+) -> Calendar:
+    owner = raw.get("owner") or {}
+    owner_address = str(owner.get("address") or "")
+    allowed = [
+        str(item) for item in raw.get("allowedOnlineMeetingProviders", [])
+        if item and item != "unknown"
+    ]
+    preferred = str(raw.get("defaultOnlineMeetingProvider") or "")
+    providers = ([preferred] if preferred in allowed else []) + [
+        item for item in allowed if item != preferred
+    ]
+    return Calendar(
+        provider="microsoft",
+        account_id=account.account_id,
+        account_label=account.label,
+        calendar_id=str(raw.get("id") or ""),
+        name=str(raw.get("name") or "Outlook Calendar"),
+        color=_COLORS.get(str(raw.get("color") or "auto"), "#bb9af7"),
+        timezone=timezone_name,
+        writable=bool(raw.get("canEdit")),
+        owned=bool(owner_address) and owner_address.casefold() == account.label.casefold(),
+        meeting_providers=tuple(providers),
     )
 
 
 class MicrosoftProvider:
-    def __init__(self, http: Any):
+    def __init__(self, http: Any, *, timezone: str | None = None):
         self.http = http
+        self.timezone = timezone or local_timezone_name()
 
-    def fetch_window(self, token: str, start: str, end: str) -> tuple[Account, list[Event]]:
+    def fetch_window(self, token: str, start: str, end: str) -> tuple[Account, list[Calendar], list[Event]]:
         headers = {
             "Authorization": f"Bearer {token}",
-            "Prefer": 'outlook.timezone="UTC"',
+            "Prefer": f'outlook.timezone="{self.timezone}"',
         }
         identity = self.http.get_json(
             f"{GRAPH}/me?{urlencode({'$select': 'id,displayName,mail,userPrincipalName'})}",
@@ -121,14 +184,16 @@ class MicrosoftProvider:
             account_id=str(identity["id"]),
             label=str(identity.get("mail") or identity.get("userPrincipalName") or identity.get("displayName") or "Outlook"),
         )
-        calendars = self._calendars(headers)
+        raw_calendars = self._calendars(headers)
+        calendars = [normalize_microsoft_calendar(item, account, self.timezone) for item in raw_calendars]
         events: list[Event] = []
-        for calendar in calendars:
+        for calendar in raw_calendars:
             events.extend(self._events(calendar, account, headers, start, end))
-        return account, events
+        return account, calendars, events
 
     def _calendars(self, headers: dict[str, str]) -> list[dict[str, Any]]:
-        url = f"{GRAPH}/me/calendars?{urlencode({'$select': 'id,name,color'})}"
+        fields = "id,name,color,canEdit,owner,allowedOnlineMeetingProviders,defaultOnlineMeetingProvider"
+        url = f"{GRAPH}/me/calendars?{urlencode({'$select': fields})}"
         items: list[dict[str, Any]] = []
         while url:
             payload = self.http.get_json(url, headers=headers)
@@ -148,7 +213,7 @@ class MicrosoftProvider:
         fields = (
             "id,subject,start,end,isAllDay,isCancelled,bodyPreview,location,"
             "organizer,onlineMeeting,onlineMeetingUrl,webLink,showAs,"
-            "lastModifiedDateTime,type,seriesMasterId"
+            "lastModifiedDateTime,type,seriesMasterId,changeKey,recurrence"
         )
         query = urlencode({
             "startDateTime": start,

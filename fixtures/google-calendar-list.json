@@ -6,7 +6,9 @@
       "backgroundColor": "#7aa2f7",
       "timeZone": "America/Chicago",
       "selected": true,
-      "primary": true
+      "primary": true,
+      "accessRole": "owner",
+      "conferenceProperties": {"allowedConferenceSolutionTypes": ["hangoutsMeet"]}
     }
   ],
   "nextPageToken": "cal-page-2"

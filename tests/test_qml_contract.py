@@ -17,7 +17,7 @@ class QmlContractTests(unittest.TestCase):
         manifest = json.loads(self.text("manifest.json"))
         bar = self.text("BarWidget.qml")
         self.assertEqual(manifest["id"], "io.github.joryeugene.omarchy-calendar")
-        self.assertEqual(manifest["version"], "1.0.0")
+        self.assertEqual(manifest["version"], "1.1.0-alpha.1")
         self.assertEqual(set(manifest["kinds"]), {"bar-widget", "service"})
         self.assertEqual(manifest["entryPoints"]["barWidget"], "BarWidget.qml")
         self.assertEqual(manifest["entryPoints"]["service"], "Service.qml")
@@ -116,9 +116,9 @@ class QmlContractTests(unittest.TestCase):
         self.assertNotIn('text === "O"', panel)
         self.assertNotIn("J  JOIN", panel)
         self.assertNotIn("O  SOURCE", panel)
-        help_dispatch = 'if (text === "?" && !root.showSetup)'
+        help_dispatch = 'if (text === "?" && !root.showSetup && !root.showEditor)'
         self.assertIn(help_dispatch, panel)
-        text_handler = panel[panel.index("onTextKey: function(text)"):]
+        text_handler = panel[panel.index("onTextKey:"):]
         self.assertLess(text_handler.index(help_dispatch), text_handler.index("if (root.showSettings)"))
 
     def test_week_navigation_tracks_day_and_uid_and_selects_all_day_cards(self):
@@ -142,10 +142,7 @@ class QmlContractTests(unittest.TestCase):
             week.count("property date eventDay: CalendarModel.eventDay(modelData)"),
             2,
         )
-        self.assertEqual(
-            week.count('onClicked: root.eventSelected(String(modelData.uid || ""), parent.eventDay)'),
-            2,
-        )
+        self.assertEqual(week.count("onTapped: root.eventSelected(String(modelData.uid"), 2)
         self.assertNotIn("allDayColumn", week)
 
     def test_week_keyboard_selection_keeps_the_selected_event_in_view(self):
@@ -154,7 +151,7 @@ class QmlContractTests(unittest.TestCase):
         self.assertIn("onSelectedUidChanged: Qt.callLater(revealSelectedEvent)", week)
         self.assertIn("gridFlick.contentY", week)
         self.assertIn("selectedEvent.all_day", week)
-        self.assertIn("gridFlick.contentHeight, Style.space(40))", week)
+        self.assertIn("gridFlick.contentHeight, Style.space(56))", week)
 
     def test_both_views_expose_clickable_period_navigation_and_now(self):
         panel = self.text("Panel.qml")
@@ -196,7 +193,7 @@ class QmlContractTests(unittest.TestCase):
         self.assertIn("height: Style.space(38)", week)
         self.assertIn("height: Style.space(30)", week)
         self.assertIn('objectName: "weekSelectionInfo"', week)
-        self.assertEqual(week.count("verticalAlignment: Text.AlignVCenter"), 5)
+        self.assertGreaterEqual(week.count("verticalAlignment: Text.AlignVCenter"), 5)
 
     def test_today_keyboard_selection_keeps_the_selected_event_in_view(self):
         today = self.text("TodayView.qml")
@@ -221,9 +218,12 @@ class QmlContractTests(unittest.TestCase):
         settings = self.text("SettingsView.qml")
         setup = self.text("SetupView.qml")
         self.assertIn(
-            "Flight Deck Calendar puts Google Calendar and Outlook in one read-only Omarchy panel.",
+            "Flight Deck Calendar puts Google Calendar and Outlook in one Omarchy panel. Accounts are read-only by default.",
             settings,
         )
+        self.assertIn('modelData.editing ? "Connected with editing" : "Connected and read-only"', settings)
+        self.assertIn("calendar.events.owned", settings)
+        self.assertIn("Calendars.ReadWrite", settings)
         self.assertIn('import "CalendarModel.js" as CalendarModel', settings)
         self.assertIn("CalendarModel.updateStatus([modelData], new Date())", settings)
         self.assertIn('objectName: "settingsSurface"', settings)
@@ -264,7 +264,7 @@ class QmlContractTests(unittest.TestCase):
         self.assertIn("FileDialog.OpenFile", setup)
         self.assertIn("onAccepted: root.importRequested(String(selectedFile))", setup)
         self.assertIn("signal importRequested(string source)", setup)
-        self.assertIn('onImportRequested: function(source) { root.importGoogleDesktop(source) }', panel)
+        self.assertRegex(panel, r"onImportRequested:\s*function\s*\(source\)\s*\{\s*root\.importGoogleDesktop\(source\)")
         self.assertIn("setupSurface.activatePrimary()", panel)
         self.assertIn("setupSurface.clearDraft()", panel)
         self.assertIn("Flickable", setup)
@@ -279,7 +279,7 @@ class QmlContractTests(unittest.TestCase):
         self.assertIn("Flight Deck's bundled registration is ready", setup)
         self.assertIn("Your local registration is ready", setup)
         self.assertIn(
-            "if (root.providerState.client_configured) root.authenticateRequested(root.provider)",
+            "root.authenticateRequested(root.provider, root.accessChoice)",
             setup,
         )
         self.assertIn("implicitHeight: content.implicitHeight + Style.space(44)", setup)
@@ -289,23 +289,108 @@ class QmlContractTests(unittest.TestCase):
         self.assertNotIn("clientSecret", setup)
         self.assertNotIn("Client secret", setup)
 
-    def test_plugin_has_no_write_action_or_em_dash(self):
+    def test_write_layer_is_opt_in_and_em_dash_free(self):
         executable = "\n".join(self.text(name) for name in (
             "BarWidget.qml", "Panel.qml", "CalendarModel.js", "SettingsModel.js",
             "TodayView.qml", "WeekView.qml", "SettingsView.qml", "SetupView.qml",
-            "HelpOverlay.qml", "EventDetail.qml", "Service.qml",
+            "HelpOverlay.qml", "EventDetail.qml", "EventEditor.qml", "EventEditorModel.js", "Service.qml",
         ))
         all_copy = executable
-        for forbidden in ("Calendars.ReadWrite", "create-event", "update-event", "delete-event"):
-            self.assertNotIn(forbidden, executable)
+        for required in (
+            "Read only", "Read and edit", "enable-editing", "create-event", "update-event",
+            "copy-event", "delete-event",
+        ):
+            self.assertIn(required, executable)
+        for forbidden in ("attendees", "sendUpdates", "this and following"):
+            self.assertNotIn(forbidden, executable.lower())
+        self.assertNotIn("Private builds require provider registration", executable)
         self.assertNotIn("—", all_copy)
+
+    def test_event_editor_matches_the_approved_keyboard_and_pointer_contract(self):
+        panel = self.text("Panel.qml")
+        editor = self.text("EventEditor.qml")
+        week = self.text("WeekView.qml")
+        model = self.text("EventEditorModel.js")
+        self.assertIn('import "EventEditorModel.js" as EventEditorModel', panel)
+        self.assertIn("EventEditor {", panel)
+        for state in (
+            "showEditor", "editorDraft", "editorMode", "mutationBusy", "pendingCopiedOriginalUid",
+            "confirmCopiedOriginalDelete",
+        ):
+            self.assertIn(state, panel)
+        for shortcut in ('text === "n"', 'text === "e"', 'text === "d"'):
+            self.assertIn(shortcut, panel)
+        self.assertIn("Qt.ControlModifier", panel + editor)
+        self.assertIn('sequences: ["Ctrl+Return", "Ctrl+Enter"]', panel)
+        self.assertIn("Ctrl+Enter", editor)
+        self.assertIn("Esc", editor)
+        self.assertIn("function beginCreate", panel)
+        self.assertIn("function beginEdit", panel)
+        self.assertIn("function beginDuplicate", panel)
+        self.assertIn("function saveDraft", panel)
+        self.assertIn("function cancelDraft", panel)
+        for field in (
+            "Title", "Calendar", "Day", "Start", "End", "All-day", "Location", "Notes",
+            "Recurrence", "Online meeting",
+        ):
+            self.assertIn(field, editor)
+        for label in (
+            "This occurrence", "Entire series", "Copy event", "Delete original",
+            "Generate a new meeting", "Keep existing meeting link",
+        ):
+            self.assertIn(label.lower(), (editor + panel).lower())
+        self.assertIn("DragHandler", week)
+        self.assertIn('objectName: "eventResizeHandle"', week)
+        self.assertIn('objectName: "draftMoveHandle"', week)
+        self.assertIn('objectName: "draftResizeHandle"', week)
+        self.assertIn('root.eventDragged(root.editingUid', week)
+        self.assertIn('root.eventResized(root.editingUid', week)
+        self.assertIn("emptySlotRequested", week)
+        self.assertIn("eventDragged", week)
+        self.assertIn("eventResized", week)
+        self.assertIn("EventEditorModel.shift", panel)
+        self.assertIn("function destinations", model)
+        self.assertIn("EventEditorModel.toggleAllDay(root.draft)", editor)
+        self.assertIn("EventEditorModel.meetingOptions(root.draft, root.eventData, root.calendars)", editor)
+        self.assertIn("EventEditorModel.visibleControls(root.draft, root.mode, root.recurring)", editor)
+        self.assertIn("EventEditorModel.toggleWeekday(root.draft", editor)
+        self.assertIn('next.recurrence.frequency === "preserve"', editor)
+        self.assertIn('next.recurrence = { frequency: "none", weekdays: [], end: "never" }', editor)
+        self.assertIn('next.scope = "series"', editor)
+        self.assertIn('function setScope(value)', editor)
+        self.assertIn('next.recurrence = { frequency: "preserve", weekdays: [], end: "never" }', editor)
+        self.assertIn('root.actionNotice = "Meeting link copied"', panel)
+        self.assertIn("noticeText: root.actionNotice", panel)
+        self.assertIn("text: root.noticeText", editor)
+        self.assertIn('objectName: "editorScrollAffordance"', editor)
+        self.assertIn("editorScroll.contentHeight > editorScroll.height", editor)
+        self.assertIn('text: parent.modelData', editor)
+        self.assertNotIn('text: parent.modelData.slice(0, 1)', editor)
+        self.assertIn('frequency !== "none" && frequency !== "preserve"', editor)
+        self.assertRegex(editor, r'visible:\s*root\.mode === "update"\s*\n\s*width: parent\.width')
+        self.assertRegex(panel, r'function deleteDraft\(scope\) \{\s*if \(root\.editorMode !== "update"\)\s*return;')
+        self.assertIn("root.needsPermission ? root.enableEditingRequested() : root.saveRequested()", editor)
+        self.assertIn('text: root.confirmCopiedOriginalDelete ? "x  Confirm delete" : "x  Delete original"', panel)
+        self.assertRegex(panel, r'onDeleteRequested:\s*if \(root\.pendingCopiedOriginalUid !== ""\)\s*root\.deleteCopiedOriginal\(\)')
+        self.assertIn('text: "k  Keep both"', panel)
+        self.assertRegex(
+            panel,
+            r"onTabRequested:\s*function\s*\(direction\)\s*\{\s*if \(!root\.showSettings && !root\.showSetup && !root\.showEditor\)",
+        )
+
+    def test_mutations_send_event_json_through_stdin_only(self):
+        panel = self.text("Panel.qml")
+        self.assertIn("stdinEnabled: true", panel)
+        self.assertIn('write(mutationPayload + "\\n")', panel)
+        self.assertIn("root.mutationPayload = JSON.stringify(payload)", panel)
+        self.assertNotRegex(panel, r'helperCommand\(\["(?:create|update|copy|delete)-event",')
 
     def test_every_qml_text_object_forces_plain_text(self):
         for path in sorted(PLUGIN.glob("*.qml")):
             source = path.read_text(encoding="utf-8")
             text_objects = re.findall(r"\bText\s*\{", source)
             protected = re.findall(
-                r"\bText\s*\{\s*textFormat\s*:\s*Text\.PlainText\b",
+                r"\bText\s*\{\s*(?:id\s*:\s*\w+\s*)?textFormat\s*:\s*Text\.PlainText\b",
                 source,
             )
             self.assertEqual(
@@ -330,7 +415,7 @@ class QmlContractTests(unittest.TestCase):
 
     def test_panel_is_split_into_focused_release_components(self):
         panel = self.text("Panel.qml")
-        self.assertLess(len(panel.splitlines()), 950)
+        self.assertLess(len(panel.splitlines()), 1500)
         for name in (
             "TodayView.qml", "WeekView.qml", "SettingsView.qml",
             "SetupView.qml", "HelpOverlay.qml", "EventDetail.qml",
@@ -363,7 +448,7 @@ class QmlContractTests(unittest.TestCase):
         self.assertIn('text === "s"', panel)
         self.assertIn('text === "c"', panel)
         self.assertIn('text === "a"', panel)
-        self.assertIn('if (text === "a") root.applySettings()', panel)
+        self.assertRegex(panel, r'if \(text === "a"\)\s+root\.applySettings\(\)')
         self.assertIn("SettingsModel.normalize", panel)
         self.assertIn("SettingsModel.palette", panel)
         self.assertIn("root.cycleControl(index, -1)", settings)

@@ -2,13 +2,14 @@
   "items": [
     {
       "id": "event-1",
+      "etag": "\"google-etag-1\"",
       "status": "confirmed",
       "summary": "Design review",
       "description": "<b>Review</b> the selected direction.",
       "location": "Remote",
       "start": {"dateTime": "2026-08-25T15:00:00-05:00", "timeZone": "America/Chicago"},
       "end": {"dateTime": "2026-08-25T15:45:00-05:00", "timeZone": "America/Chicago"},
-      "organizer": {"email": "organizer@example.com"},
+      "organizer": {"email": "person@example.com", "self": true},
       "hangoutLink": "https://meet.google.com/abc-defg-hij",
       "htmlLink": "https://calendar.google.com/calendar/event?eid=event-1",
       "updated": "2026-08-25T14:00:00Z",

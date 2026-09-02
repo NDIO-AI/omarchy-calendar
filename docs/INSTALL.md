@@ -42,7 +42,7 @@ Google uses PKCE S256 and receives only identity, `calendar.events.readonly`, an
 
 ### Personal Outlook.com
 
-Microsoft uses the `/consumers` authority and receives identity, profile, offline access, `User.Read`, and `Calendars.Read`. It uses no application credential. There is no `Calendars.ReadWrite` scope and no mutation command.
+Microsoft uses the `/consumers` authority and receives identity, profile, offline access, `User.Read`, and `Calendars.Read`. It uses no application credential. The account remains read-only by default.
 
 For either provider, press `c` and choose Connect when browser consent needs to be repeated.
 
@@ -65,6 +65,19 @@ For Microsoft, configure the public Application client ID from a personal-accoun
 ```
 
 Provider client-ID overrides are written to `~/.config/omarchy-calendar/providers.json` with mode `0600`. OAuth tokens and an imported Google Desktop app credential are stored in the system keyring. Bundled public registrations remain in the installed plugin. Cached events are stored in `~/.local/state/omarchy-calendar/calendar.db` with mode `0600`.
+
+## Enable optional event editing
+
+Choose **Read and edit** while connecting a new account, or upgrade an existing account from Flight Deck when the editor asks for permission. Google adds `calendar.events.owned`; Outlook adds `Calendars.ReadWrite`. The read-only scopes remain available so Today, Week, and calendar filtering continue to work.
+
+The terminal provides the same account-specific upgrade:
+
+```bash
+"$calendarctl" enable-editing google
+"$calendarctl" enable-editing microsoft
+```
+
+Editing is limited to calendars owned by the connected account. Only changes confirmed with Save are sent to the provider. Delete requires a second confirmation. Copying an event to another calendar does not delete the original event, and Flight Deck offers Delete original only after the destination copy has been verified.
 
 ## Operations
 

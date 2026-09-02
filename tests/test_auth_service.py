@@ -193,6 +193,75 @@ class AuthenticatorTests(unittest.TestCase):
             self.assertNotIn("client_secret", http.posts[0][1])
             store.close()
 
+    def test_edit_permission_upgrade_rejects_the_wrong_account_without_replacing_token(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = CalendarStore(Path(temporary) / "calendar.db")
+            keyring = FakeKeyring({
+                "access_token": "existing-read-token", "refresh_token": "existing-refresh",
+                "expires_at": 9999999999, "access_mode": "read",
+            }, app_credential="desktop-credential")
+            http = FakeHttp({"access_token": "new-edit-token", "expires_in": 3600})
+            provider = FakeProvider((Account("google", "wrong", "wrong@example.com"), []))
+            opened = []
+            auth = Authenticator(
+                store, keyring=keyring, http=http,
+                settings=ProviderSettings(google_client_id="google-client"),
+                providers={"google": provider}, browser=lambda url: opened.append(url) or True,
+                receiver_factory=FakeReceiver,
+                flow_factory=lambda: OAuthFlow.for_test(verifier="v" * 64, state="state"),
+                now=lambda: datetime(2026, 9, 2, 12, tzinfo=timezone.utc),
+            )
+
+            with self.assertRaisesRegex(ValueError, "same Google account"):
+                auth.authenticate("google", access="edit", expected_account_id="expected")
+
+            self.assertIn("calendar.events.owned", opened[0])
+            self.assertEqual(keyring.puts, [])
+            self.assertEqual(keyring.token["access_token"], "existing-read-token")
+            store.close()
+
+    def test_edit_permission_upgrade_marks_token_only_after_provider_read(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = CalendarStore(Path(temporary) / "calendar.db")
+            keyring = FakeKeyring(None, app_credential="desktop-credential")
+            auth = Authenticator(
+                store, keyring=keyring,
+                http=FakeHttp({"access_token": "edit", "refresh_token": "refresh", "expires_in": 3600}),
+                settings=ProviderSettings(google_client_id="google-client"),
+                providers={"google": FakeProvider((Account("google", "a", "a@example.com"), []))},
+                browser=lambda _url: True, receiver_factory=FakeReceiver,
+                flow_factory=lambda: OAuthFlow.for_test(verifier="v" * 64, state="state"),
+                now=lambda: datetime(2026, 9, 2, 12, tzinfo=timezone.utc),
+            )
+
+            result = auth.authenticate("google", access="edit", expected_account_id="a")
+
+            self.assertEqual(result["access"], "edit")
+            self.assertEqual(keyring.puts[0][2]["access_mode"], "edit")
+            store.close()
+
+    def test_edit_permission_upgrade_preserves_an_existing_refresh_token(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = CalendarStore(Path(temporary) / "calendar.db")
+            keyring = FakeKeyring({
+                "access_token": "read", "refresh_token": "existing-refresh",
+                "expires_at": 9999999999, "access_mode": "read",
+            }, app_credential="desktop-credential")
+            auth = Authenticator(
+                store, keyring=keyring,
+                http=FakeHttp({"access_token": "edit", "expires_in": 3600}),
+                settings=ProviderSettings(google_client_id="google-client"),
+                providers={"google": FakeProvider((Account("google", "a", "a@example.com"), []))},
+                browser=lambda _url: True, receiver_factory=FakeReceiver,
+                flow_factory=lambda: OAuthFlow.for_test(verifier="v" * 64, state="state"),
+                now=lambda: datetime(2026, 9, 2, 12, tzinfo=timezone.utc),
+            )
+
+            auth.authenticate("google", access="edit", expected_account_id="a")
+
+            self.assertEqual(keyring.puts[0][2]["refresh_token"], "existing-refresh")
+            store.close()
+
     def test_google_auth_without_desktop_credential_fails_before_browser_open(self):
         with tempfile.TemporaryDirectory() as temporary:
             store = CalendarStore(Path(temporary) / "calendar.db")

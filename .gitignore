@@ -1,6 +1,7 @@
 .worktrees/
 /.private/
 /.superpowers/
+/.quality/
 /.wrangler/
 __pycache__/
 *.pyc
