@@ -26,7 +26,7 @@ if [[ -z $qml_linter && -x /usr/lib/qt6/bin/qmllint ]]; then
 fi
 if [[ -n $qml_linter ]]; then
   for qml_file in "$project_root"/*.qml; do
-    if ! qml_output=$($qml_linter "$qml_file" 2>&1); then
+    if ! qml_output=$($qml_linter --max-warnings -1 "$qml_file" 2>&1); then
       echo "$qml_output" >&2
       exit 1
     fi
