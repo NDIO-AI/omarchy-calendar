@@ -163,7 +163,10 @@ def setup_status(
         token_get = getattr(token_store, "get", None)
         if token_get:
             for account in connected:
-                token = token_get(provider, str(account["account_id"])) or {}
+                try:
+                    token = token_get(provider, str(account["account_id"])) or {}
+                except KeyringError:
+                    token = {}
                 scopes = set(str(token.get("scope") or "").split())
                 write_scope = (
                     "https://www.googleapis.com/auth/calendar.events.owned"

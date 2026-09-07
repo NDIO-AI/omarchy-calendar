@@ -25,6 +25,7 @@ from omarchy_calendar.cli import (
     seed_demo,
     setup_status,
 )
+from omarchy_calendar.keyring import KeyringError
 from omarchy_calendar.models import ProviderHealth
 from omarchy_calendar.settings import ProviderSettings
 
@@ -321,6 +322,24 @@ class CalendarCliTests(unittest.TestCase):
         self.assertEqual(google["editing_account_ids"], ["account"])
         self.assertEqual(keyring.requested, ("google", "account"))
         self.assertNotIn("private-token", json.dumps(status))
+
+    def test_setup_status_keeps_connected_accounts_read_only_when_keyring_is_unavailable(self):
+        class UnavailableKeyring:
+            def get(self, _provider, _account_id):
+                raise KeyringError("Secret Service client is not installed")
+
+        with CalendarStore(self.state / "omarchy-calendar" / "calendar.db") as store:
+            store.set_health(ProviderHealth.ok(
+                "microsoft", "account", "2026-08-25T12:00:00Z"
+            ))
+            status = setup_status(store, ProviderSettings(), UnavailableKeyring())
+
+        outlook = next(
+            item for item in status["providers"] if item["provider"] == "microsoft"
+        )
+        self.assertTrue(outlook["connected"])
+        self.assertFalse(outlook["editing"])
+        self.assertEqual(outlook["edit_accounts"], 0)
 
     def test_setup_status_does_not_trust_access_mode_without_exact_write_scope(self):
         class FakeKeyring:
