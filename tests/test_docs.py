@@ -87,7 +87,7 @@ class DocumentationTests(unittest.TestCase):
             "omarchy plugin add https://github.com/joryeugene/omarchy-calendar.git --enable",
             "Connect each account in the browser",
             "You do not need a Google Cloud or Microsoft Entra project",
-            "https://github.com/joryeugene/omarchy-calendar/releases/tag/v1.0.0",
+            "https://github.com/joryeugene/omarchy-calendar/releases/tag/v1.1.0",
             "https://www.googleapis.com/auth/calendar.events.readonly",
             "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
             "openid",
@@ -96,6 +96,8 @@ class DocumentationTests(unittest.TestCase):
             "offline_access",
             "User.Read",
             "Calendars.Read",
+            "calendar.events.owned",
+            "Calendars.ReadWrite",
             "Secret Service",
             "~/.local/state/omarchy-calendar/calendar.db",
             "account identifiers and labels, calendar identifiers, names, and colors",
@@ -110,7 +112,10 @@ class DocumentationTests(unittest.TestCase):
             "runs immediately when invoked",
             "Uninstalling the plugin alone does not delete data",
             "uses Google Calendar data only to display",
-            "does not sell, share, or transfer Google user data",
+            "does not sell or disclose Google user data to the developer",
+            "sent directly to the destination provider you selected",
+            "No copy passes through a Flight Deck server",
+            "Only changes confirmed with Save are sent to the provider",
             "cannot access your calendar data or tokens",
             "Google API Services User Data Policy, including the Limited Use requirements",
             "GNU General Public License version 3 or later",
@@ -120,7 +125,6 @@ class DocumentationTests(unittest.TestCase):
         self.assertIn('href="privacy/"', homepage)
         self.assertIn('href="terms/"', homepage)
         for forbidden in (
-            "Calendars.ReadWrite",
             "https://www.googleapis.com/auth/calendar</code>",
             "https://www.googleapis.com/auth/calendar.events</code>",
             "one-click account setup",
@@ -144,12 +148,15 @@ class DocumentationTests(unittest.TestCase):
             "## Data protection",
             "## Retention and deletion",
             "uses Google Calendar data only to display",
-            "does not sell, share, or transfer Google user data",
+            "does not sell or disclose Google user data to the developer",
+            "sent directly to the destination provider selected by the user",
+            "No copy passes through a Flight Deck server",
             "does not integrate with AI services",
             "cannot access calendar data or tokens",
             "Google API Services User Data Policy, including the Limited Use requirements",
             "account identifiers and labels; calendar identifiers, names, and colors",
             "event titles, times, locations, descriptions, organizers, status, and meeting and source links",
+            "provider event and series identifiers, revision keys, time zones, recurrence details, ownership and writability flags, attendee presence, and supported meeting providers",
             "Secret Service keyring",
             "private file permissions",
             "retains Google OAuth tokens until",
@@ -179,7 +186,7 @@ class DocumentationTests(unittest.TestCase):
         for path in (ROOT / "README.md", ROOT / "docs" / "INSTALL.md"):
             document = path.read_text(encoding="utf-8")
             self.assertIn(
-                "Flight Deck Calendar puts Google Calendar and Outlook in one read-only Omarchy panel.",
+                "Flight Deck Calendar puts Google Calendar and Outlook in one Omarchy panel.",
                 document,
             )
             connect = document.index("Connect in browser")
@@ -196,13 +203,14 @@ class DocumentationTests(unittest.TestCase):
     def test_stable_site_removes_verification_candidate_and_marks_v1(self):
         homepage = (SITE / "index.html").read_text(encoding="utf-8")
         self.assertFalse((SITE / "verification" / "index.html").exists())
-        self.assertIn("v1.0.0 for Omarchy", homepage)
+        self.assertIn("v1.1.0 for Omarchy", homepage)
         self.assertIn(
-            "Flight Deck Calendar puts Google Calendar and Outlook in one read-only Omarchy panel.",
+            "Flight Deck Calendar puts Google Calendar and Outlook in one Omarchy panel.",
             homepage,
         )
+        self.assertIn("Accounts remain read-only until editing is enabled", homepage)
         self.assertIn(
-            "https://github.com/joryeugene/omarchy-calendar/releases/tag/v1.0.0",
+            "https://github.com/joryeugene/omarchy-calendar/releases/tag/v1.1.0",
             homepage,
         )
         self.assertNotIn("rc.3", homepage.lower())
@@ -254,18 +262,22 @@ class DocumentationTests(unittest.TestCase):
         )
         positions = [readme.index(heading) for heading in headings]
         self.assertEqual(positions, sorted(positions))
+        editor_image = "screenshots/flight-deck-calendar-editor.png"
         week_image = "screenshots/flight-deck-calendar-week.png"
         today_image = "screenshots/flight-deck-calendar-today.png"
+        self.assertLess(readme.index(editor_image), readme.index(week_image))
+        self.assertLess(readme.index(editor_image), readme.index("## Install"))
         self.assertLess(readme.index(week_image), readme.index("## Install"))
         self.assertGreater(readme.index(today_image), readme.index("## Keyboard map"))
         self.assertLess(readme.index(today_image), readme.index("## Settings and themes"))
         self.assertIn("No hosted backend", readme)
         self.assertIn(
-            "Flight Deck Calendar puts Google Calendar and Outlook in one read-only Omarchy panel.",
+            "Flight Deck Calendar puts Google Calendar and Outlook in one Omarchy panel.",
             readme,
         )
+        self.assertIn("read-only access remains the default", readme)
         self.assertIn(
-            "https://github.com/joryeugene/omarchy-calendar/releases/tag/v1.0.0",
+            "https://github.com/joryeugene/omarchy-calendar/releases/tag/v1.1.0",
             readme,
         )
         for forbidden in (
@@ -294,6 +306,78 @@ class DocumentationTests(unittest.TestCase):
             "plugin.pre-rc",
         ):
             self.assertNotIn(retired, guide)
+
+    def test_write_layer_docs_keep_read_only_default_and_explain_opt_in_changes(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        install = (ROOT / "docs" / "INSTALL.md").read_text(encoding="utf-8")
+        privacy = (ROOT / "PRIVACY.md").read_text(encoding="utf-8")
+        documentation = readme + install + privacy
+
+        for required in (
+            "read-only by default",
+            "calendar.events.owned",
+            "Calendars.ReadWrite",
+            "calendarctl enable-editing",
+            "Only changes confirmed with Save are sent to the provider.",
+            "Copying an event to another calendar does not delete the original event.",
+            "sent directly from the workstation to the destination provider",
+            "Events with attendees are duplicate-only",
+        ):
+            self.assertIn(required, documentation)
+        self.assertIn("## Optional event editing", readme)
+        self.assertIn("## Enable optional event editing", install)
+        self.assertIn("opt in to event editing", privacy)
+        self.assertNotIn("There are no write scopes or calendar mutation commands.", documentation)
+        self.assertNotIn("There is no `Calendars.ReadWrite` scope and no mutation command.", documentation)
+
+    def test_write_layer_docs_cover_recurring_meeting_offline_conflict_and_transfer_safety(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        install = (ROOT / "docs" / "INSTALL.md").read_text(encoding="utf-8")
+        documentation = readme + install
+
+        for required in (
+            "daily, on weekdays, weekly, monthly, or on selected weekdays",
+            "continue indefinitely, stop after a set number of events, or end on a date",
+            "**This occurrence** or **Entire series**",
+            "**This and following** is not supported",
+            "checks the source series for modified or cancelled occurrences",
+            "offers Delete original only when the scan is complete and finds none",
+            "otherwise, it keeps the original series and explains why",
+            "keep the existing meeting link or generate a new meeting",
+            "reports that the meeting link is still pending",
+            "The unsaved draft remains available while the provider is offline",
+            "refreshes the provider event and preserves the local draft",
+            "reuses the same provider request identifier",
+            "eligible for deletion, online, and authorized for event editing",
+            "Events with attendees are duplicate-only",
+            "sent directly from the workstation to the destination provider",
+            "title, day and time, all-day state, location, notes, supported recurrence, and meeting choice",
+            "refuses the copy instead of flattening the series into one event",
+        ):
+            self.assertIn(required, documentation)
+
+        self.assertNotIn("This and following is supported", documentation)
+
+    def test_canonical_dataset_documents_the_write_layer_keyboard_states(self):
+        data = json.loads(GUIDE_DATA.read_text(encoding="utf-8"))
+        entries = [item for item in data["shortcuts"] if item["surface"] == "calendar"]
+        keys = {item["keys"] for item in entries}
+
+        for required in (
+            "n", "e", "d", "j / k (Editor)", "h / l (Editor)",
+            "Shift+H / Shift+L", "Shift+J / Shift+K",
+            "Enter (Recurring editor)", "Ctrl+Enter (Editor)", "Esc (Editor)",
+            "k (Copy result)", "e (Copy result)", "x (Copy result)",
+        ):
+            self.assertIn(required, keys)
+
+        actions = {item["keys"]: item["action"] for item in entries}
+        self.assertIn("This occurrence or Entire series", actions["Enter (Recurring editor)"])
+        self.assertIn("Keep both", actions["k (Copy result)"])
+        self.assertIn("Enable editing", actions["e (Copy result)"])
+        self.assertIn("Delete original", actions["x (Copy result)"])
+        self.assertIn("one day", actions["Shift+H / Shift+L"])
+        self.assertIn("15 minutes", actions["Shift+J / Shift+K"])
 
     def test_canonical_dataset_has_complete_non_alt_calendar_contract(self):
         data = json.loads(GUIDE_DATA.read_text(encoding="utf-8"))

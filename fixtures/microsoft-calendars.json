@@ -3,7 +3,11 @@
     {
       "id": "calendar-primary",
       "name": "Personal",
-      "color": "lightBlue"
+      "color": "lightBlue",
+      "canEdit": true,
+      "owner": {"name": "Person", "address": "person@outlook.example"},
+      "allowedOnlineMeetingProviders": ["teamsForBusiness"],
+      "defaultOnlineMeetingProvider": "teamsForBusiness"
     }
   ],
   "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/calendars?$skiptoken=calendar-page-2"

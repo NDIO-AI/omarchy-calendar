@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+set -euo pipefail
+
+export FLIGHT_DECK_E2E_ROOT="${FLIGHT_DECK_E2E_ROOT:-${XDG_RUNTIME_DIR:-/tmp}/flight-deck-e2e-native}"
+export FLIGHT_DECK_E2E_NATIVE=1
+exec "$(dirname "$0")/tests/e2e_helper.py" "$@"

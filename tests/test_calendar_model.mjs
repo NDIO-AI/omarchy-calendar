@@ -53,20 +53,38 @@ test("events are filtered by local day and initial selection prefers upcoming", 
   assert.equal(model.initialSelection(today, new Date("2026-08-25T10:00:00-05:00")), 1)
 })
 
-test("Now prefers an ongoing timed event, then the nearest timed event", () => {
+test("all-day events use provider date fields instead of shifted instants", () => {
+  const event = {
+    uid: "tokyo-all-day", all_day: true,
+    start_day: "2026-09-02", end_day: "2026-09-05",
+    start: "2026-09-02T00:00:00+09:00", end: "2026-09-05T00:00:00+09:00",
+  }
+
+  assert.deepEqual(model.eventsForDay([event], new Date("2026-09-01T12:00:00-05:00")), [])
+  assert.deepEqual(
+    model.eventsForDay([event], new Date("2026-09-04T12:00:00-05:00")).map(item => item.uid),
+    ["tokyo-all-day"],
+  )
+  assert.equal(model.dayKey(model.eventDay(event)), "2026-09-02")
+})
+
+test("Now selects an ongoing event, then the next event, and never a completed event", () => {
   const events = [
     { uid: "all-day", all_day: true, start: "2026-08-27T00:00:00-05:00", end: "2026-08-28T00:00:00-05:00" },
-    { uid: "past", all_day: false, start: "2026-08-27T08:00:00-05:00", end: "2026-08-27T09:00:00-05:00" },
-    { uid: "ongoing", all_day: false, start: "2026-08-27T09:45:00-05:00", end: "2026-08-27T10:15:00-05:00" },
+    { uid: "past", all_day: false, start: "2026-08-27T08:00:00-05:00", end: "2026-08-27T09:59:00-05:00" },
+    { uid: "ongoing-old", all_day: false, start: "2026-08-27T09:30:00-05:00", end: "2026-08-27T10:15:00-05:00" },
+    { uid: "ongoing-new", all_day: false, start: "2026-08-27T09:45:00-05:00", end: "2026-08-27T10:15:00-05:00" },
     { uid: "future", all_day: false, start: "2026-08-27T10:20:00-05:00", end: "2026-08-27T10:50:00-05:00" },
   ]
   const day = new Date("2026-08-27T10:00:00-05:00")
 
-  assert.equal(model.nowSelectionUid(events, day, day), "ongoing")
+  assert.equal(model.nowSelectionUid(events, day, day), "ongoing-new")
   assert.equal(
-    model.nowSelectionUid(events.filter(event => event.uid !== "ongoing"), day, day),
+    model.nowSelectionUid(events.filter(event => !event.uid.startsWith("ongoing")), day, day),
     "future",
   )
+  assert.equal(model.nowSelectionUid(events.slice(0, 2), day, day), "all-day")
+  assert.equal(model.nowSelectionUid([events[1]], day, day), "")
   assert.equal(model.nowSelectionUid([events[0]], day, day), "all-day")
   assert.equal(model.nowSelectionUid([], day, day), "")
 })
@@ -227,4 +245,45 @@ test("provider labels use the product names shown to people", () => {
   assert.equal(model.providerLabel("microsoft"), "Outlook")
   assert.equal(model.providerLabel("caldav"), "caldav")
   assert.equal(model.providerLabel(""), "Unknown")
+})
+
+test("empty-slot hit testing excludes occupied event minutes", () => {
+  const events = [
+    { start: "2026-09-02T10:00:00-05:00", end: "2026-09-02T11:00:00-05:00" },
+    { start: "2026-09-02T10:30:00-05:00", end: "2026-09-02T11:30:00-05:00" },
+  ]
+
+  assert.equal(model.eventAtMinute(events, 599), false)
+  assert.equal(model.eventAtMinute(events, 600), true)
+  assert.equal(model.eventAtMinute(events, 675), true)
+  assert.equal(model.eventAtMinute(events, 690), false)
+})
+
+test("empty-slot hit testing excludes the full minimum-height event card", () => {
+  const events = [
+    { start: "2026-09-02T10:00:00-05:00", end: "2026-09-02T10:15:00-05:00" },
+  ]
+
+  assert.equal(model.eventAtMinute(events, 630, 32), true)
+  assert.equal(model.eventAtMinute(events, 645, 32), false)
+})
+
+test("overnight event layout and hit testing are clipped to each visible day", () => {
+  const event = {
+    start: "2026-09-02T23:30:00-05:00",
+    end: "2026-09-03T01:00:00-05:00",
+  }
+  const first = new Date("2026-09-02T12:00:00-05:00")
+  const second = new Date("2026-09-03T12:00:00-05:00")
+
+  assert.equal(model.eventAtMinute([event], 1425, 0, first), true)
+  assert.equal(model.eventAtMinute([event], 30, 0, second), true)
+  assert.equal(model.eventAtMinute([event], 120, 0, second), false)
+  assert.equal(model.timePosition(event, 60, 0, second), 0)
+  assert.equal(model.durationHeight(event, 60, second), 60)
+})
+
+test("the Week grid fills available height without shrinking below its density", () => {
+  assert.equal(model.fillHourHeight(46, 620, 13, 10), 46.15384615384615)
+  assert.equal(model.fillHourHeight(46, 500, 13, 10), 46)
 })

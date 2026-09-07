@@ -11,12 +11,17 @@ Item {
   readonly property string helperPath: manifest && manifest.__sourceDir
     ? String(manifest.__sourceDir) + "/calendarctl" : ""
   property bool syncing: false
+  property bool syncQueued: false
   property int revision: 0
   property string lastError: ""
   property int syncIntervalMinutes: 5
 
   function requestSync() {
-    if (syncing || helperPath === "") return false
+    if (helperPath === "") return false
+    if (syncing) {
+      syncQueued = true
+      return true
+    }
     syncing = true
     lastError = ""
     syncProcess.command = [root.helperPath, "sync"]
@@ -46,6 +51,10 @@ Item {
       root.syncing = false
       root.lastError = exitCode === 0 ? "" : String(syncError.text || "Calendar refresh failed").trim()
       root.revision += 1
+      if (root.syncQueued) {
+        root.syncQueued = false
+        root.requestSync()
+      }
     }
   }
 }

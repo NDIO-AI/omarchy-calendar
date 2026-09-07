@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
+import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -134,6 +135,40 @@ class SyncEngineTests(unittest.TestCase):
         self.assertEqual(view["events"][0]["uid"], "google:a:c:old")
         self.assertTrue(view["providers"][0]["stale"])
         self.assertNotIn("refreshed-secret", view["providers"][0]["last_error"])
+
+    def test_revoked_refresh_token_requires_reconnection_and_preserves_cache(self):
+        class RevokedHttp:
+            def post_token(self, _url, _form):
+                raise HttpError(
+                    400,
+                    '{"error":"invalid_grant","error_description":"Token revoked"}',
+                )
+
+        keyring = FakeKeyring(
+            {"access_token": "old", "refresh_token": "refresh", "expires_at": 0},
+            app_credential="desktop-credential",
+        )
+        engine = SyncEngine(
+            self.store,
+            keyring=keyring,
+            settings=ProviderSettings(google_client_id="google-client"),
+            providers={"google": FakeProvider()},
+            http=RevokedHttp(),
+            now=lambda: datetime(2026, 8, 25, 12, tzinfo=timezone.utc),
+        )
+
+        result = engine.sync("google")
+
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(keyring.puts, [])
+        view = self.store.view(*self.window)
+        self.assertEqual(view["events"][0]["uid"], "google:a:c:old")
+        self.assertFalse(view["providers"][0]["connected"])
+        self.assertTrue(view["providers"][0]["stale"])
+        self.assertEqual(
+            view["providers"][0]["last_error"],
+            "Calendar credentials need browser reconnection",
+        )
 
     def test_expired_token_refreshes_before_provider_read(self):
         provider = FakeProvider((Account("google", "a", "a@example.com"), [sample_event()]))
@@ -272,6 +307,96 @@ class SyncEngineTests(unittest.TestCase):
 
         self.assertEqual(result["synced"], 1)
         self.assertNotIn("client_secret", http.posts[0][1])
+
+
+class LegacyV1UpgradeTests(unittest.TestCase):
+    def test_v1_profile_migrates_and_syncs_with_its_existing_token(self):
+        class RegistrationGuardSettings:
+            def client_id(self, _provider):
+                raise AssertionError("a valid v1 token must not consult registration metadata")
+
+            def google_app_credential(self, _keyring):
+                raise AssertionError("a valid v1 token must not consult registration metadata")
+
+        class TokenExchangeGuard:
+            def post_token(self, _url, _form):
+                raise AssertionError("a valid v1 token must not start reauthentication")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "calendar.db"
+            connection = sqlite3.connect(path)
+            connection.executescript(
+                """
+                CREATE TABLE events (
+                  uid TEXT PRIMARY KEY, provider TEXT NOT NULL, account_id TEXT NOT NULL,
+                  account_label TEXT NOT NULL, calendar_id TEXT NOT NULL,
+                  calendar_name TEXT NOT NULL, calendar_color TEXT NOT NULL,
+                  title TEXT NOT NULL, start TEXT NOT NULL, end TEXT NOT NULL,
+                  all_day INTEGER NOT NULL CHECK (all_day IN (0, 1)), status TEXT NOT NULL,
+                  location TEXT NOT NULL, description TEXT NOT NULL, organizer TEXT NOT NULL,
+                  meeting_url TEXT NOT NULL, provider_url TEXT NOT NULL, updated TEXT NOT NULL
+                );
+                CREATE INDEX events_window ON events (start, end);
+                CREATE INDEX events_account ON events (provider, account_id);
+                CREATE TABLE provider_health (
+                  provider TEXT NOT NULL, account_id TEXT NOT NULL,
+                  connected INTEGER NOT NULL CHECK (connected IN (0, 1)),
+                  last_sync TEXT NOT NULL, last_error TEXT NOT NULL, retry_after TEXT NOT NULL,
+                  stale INTEGER NOT NULL CHECK (stale IN (0, 1)),
+                  demo INTEGER NOT NULL CHECK (demo IN (0, 1)), skipped INTEGER NOT NULL,
+                  PRIMARY KEY (provider, account_id)
+                );
+                INSERT INTO events VALUES (
+                  'google:a:c:legacy', 'google', 'a', 'a@example.com', 'c', 'Work', '#7aa2f7',
+                  'Cached before upgrade', '2026-08-25T15:00:00+00:00',
+                  '2026-08-25T16:00:00+00:00', 0, 'confirmed', '', '', '', '',
+                  'https://calendar.google.com/legacy', '2026-08-25T14:00:00Z'
+                );
+                INSERT INTO provider_health VALUES (
+                  'google', 'a', 1, '2026-08-25T14:00:00Z', '', '', 0, 0, 0
+                );
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            original_token = {
+                "access_token": "existing-read-token",
+                "refresh_token": "existing-refresh",
+                "expires_at": 9999999999,
+            }
+            keyring = FakeKeyring(dict(original_token))
+            provider = FakeProvider((
+                Account("google", "a", "a@example.com"),
+                [sample_event()],
+            ))
+            with CalendarStore(path) as store:
+                migrated = store.get_event("google:a:c:legacy")
+                result = SyncEngine(
+                    store,
+                    keyring=keyring,
+                    settings=RegistrationGuardSettings(),
+                    providers={"google": provider},
+                    http=TokenExchangeGuard(),
+                    now=lambda: datetime(2026, 8, 25, 12, tzinfo=timezone.utc),
+                ).sync("google")
+                view = store.view(
+                    "2026-08-25T00:00:00Z", "2026-08-26T00:00:00Z"
+                )
+                event_columns = {
+                    row[1] for row in store.connection.execute("PRAGMA table_info(events)")
+                }
+
+            self.assertEqual(result["synced"], 1)
+            self.assertEqual(provider.last_token, "existing-read-token")
+            self.assertEqual(keyring.token, original_token)
+            self.assertEqual(keyring.puts, [])
+            self.assertTrue(migrated["has_attendees"])
+            self.assertEqual([event["uid"] for event in view["events"]], ["google:a:c:fresh"])
+            self.assertFalse(view["events"][0]["has_attendees"])
+            self.assertIn("provider_event_id", event_columns)
+            self.assertEqual(len(view["calendars"]), 1)
+            self.assertFalse(view["calendars"][0]["writable"])
 
 
 if __name__ == "__main__":

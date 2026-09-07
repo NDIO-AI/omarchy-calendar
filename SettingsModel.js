@@ -70,6 +70,56 @@ function withValue(values, key, value) {
   return normalize(next)
 }
 
+function accountRows(providers, calendars, health) {
+  var rows = []
+  var setup = providers || []
+  for (var p = 0; p < setup.length; p++) {
+    var provider = setup[p]
+    var accounts = []
+    for (var h = 0; h < (health || []).length; h++)
+      if (health[h].provider === provider.provider && health[h].demo !== true)
+        accounts.push(String(health[h].account_id || ""))
+    for (var c = 0; c < (calendars || []).length; c++)
+      if (calendars[c].provider === provider.provider && accounts.indexOf(String(calendars[c].account_id || "")) < 0)
+        accounts.push(String(calendars[c].account_id || ""))
+    if (!accounts.length) accounts.push("")
+    for (var a = 0; a < accounts.length; a++) {
+      var accountId = accounts[a]
+      var calendar = (calendars || []).find(function(item) {
+        return item.provider === provider.provider && String(item.account_id || "") === accountId
+      })
+      var state = (health || []).find(function(item) {
+        return item.provider === provider.provider && String(item.account_id || "") === accountId
+      })
+      rows.push({
+        provider: provider.provider,
+        provider_label: provider.label || provider.provider,
+        account_id: accountId,
+        account_label: calendar ? String(calendar.account_label || provider.label) : String(provider.label || provider.provider),
+        connected: state ? state.connected === true : provider.connected === true,
+        stale: state ? state.stale === true : provider.stale === true,
+        last_sync: state ? String(state.last_sync || "") : String(provider.last_sync || ""),
+        last_error: state ? String(state.last_error || "") : String(provider.last_error || ""),
+        editing: (provider.editing_account_ids || []).indexOf(accountId) >= 0,
+      })
+    }
+  }
+  return rows
+}
+
+function accountActions(rows) {
+  var actions = []
+  for (var i = 0; i < (rows || []).length; i++) {
+    var row = rows[i]
+    if (!row.connected) actions.push({ provider: row.provider, account_id: row.account_id, kind: "connect", row: i })
+    else {
+      if (!row.editing) actions.push({ provider: row.provider, account_id: row.account_id, kind: "enable", row: i })
+      actions.push({ provider: row.provider, account_id: row.account_id, kind: "disconnect", row: i })
+    }
+  }
+  return actions
+}
+
 function palette(name, omarchy) {
   var source = omarchy || {}
   if (name === "omarchy") {
@@ -112,5 +162,7 @@ if (typeof module !== "undefined") module.exports = {
   DEFAULTS: DEFAULTS,
   normalize: normalize,
   withValue: withValue,
+  accountRows: accountRows,
+  accountActions: accountActions,
   palette: palette
 }

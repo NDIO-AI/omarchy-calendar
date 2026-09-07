@@ -12,6 +12,19 @@ class NormalizeTests(unittest.TestCase):
         self.assertNotIn("<b>", result)
         self.assertLessEqual(len(result), 4000)
 
+    def test_plain_text_removes_escaped_html_comments(self):
+        for prefix, suffix in (
+            ("&lt;!--", "--&gt;"),
+            ("&amp;lt;!--", "--&amp;gt;"),
+            ("&amp;amp;lt;!--", "--&amp;amp;gt;"),
+        ):
+            with self.subTest(prefix=prefix):
+                source = (
+                    f"{prefix} .EmailQuote {{ border-left: #800000 2px solid; }} {suffix} "
+                    "Focused certification preparation."
+                )
+                self.assertEqual(plain_text(source), "Focused certification preparation.")
+
     def test_meeting_extraction_accepts_known_https_hosts_only(self):
         text = "Join https://zoom.us/j/123?pwd=abc or see https://example.com/not-a-meeting"
         self.assertEqual(extract_meeting_url(text), "https://zoom.us/j/123?pwd=abc")

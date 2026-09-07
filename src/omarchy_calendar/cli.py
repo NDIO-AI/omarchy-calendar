@@ -17,6 +17,7 @@ from .auth_service import Authenticator
 from .cache import CalendarStore
 from .demo import ZONE, demo_events
 from .keyring import KeyringError, SecretServiceStore, redact
+from .mutations import EventDraft, MutationService
 from .normalize import is_safe_https_url
 from .settings import ProviderSettings
 from .sync import SyncEngine
@@ -28,10 +29,14 @@ def state_path() -> Path:
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(prog="calendarctl", description="Read-only Omarchy calendar helper")
+    root = argparse.ArgumentParser(prog="calendarctl", description="Omarchy calendar helper")
     commands = root.add_subparsers(dest="command", required=True)
     auth = commands.add_parser("auth")
     auth.add_argument("provider", choices=("google", "microsoft"))
+    auth.add_argument("--access", choices=("read", "edit"), default="read")
+    enable = commands.add_parser("enable-editing")
+    enable.add_argument("provider", choices=("google", "microsoft"))
+    enable.add_argument("--account", default="")
     sync = commands.add_parser("sync")
     sync.add_argument("--provider", choices=("google", "microsoft"))
     view = commands.add_parser("view")
@@ -48,9 +53,13 @@ def parser() -> argparse.ArgumentParser:
     disconnect.add_argument("provider", choices=("google", "microsoft"))
     disconnect.add_argument("--account")
     commands.add_parser("reset-local-data")
+    for name in ("create-event", "update-event", "copy-event", "delete-event"):
+        commands.add_parser(name)
     for name in ("open-meeting", "open-source"):
         action = commands.add_parser(name)
         action.add_argument("uid")
+    copy_meeting = commands.add_parser("copy-meeting")
+    copy_meeting.add_argument("uid")
     demo = commands.add_parser("demo")
     demo_commands = demo.add_subparsers(dest="demo_command", required=True)
     seed = demo_commands.add_parser("seed")
@@ -61,6 +70,19 @@ def parser() -> argparse.ArgumentParser:
 
 def emit(payload: dict[str, object]) -> None:
     print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+
+
+def read_stdin_json(stream=sys.stdin, *, limit: int = 65536) -> dict[str, object]:
+    raw = stream.readline(limit + 1)
+    if len(raw.encode("utf-8")) > limit:
+        raise ValueError("Event JSON is too large")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ValueError("Event input must be valid JSON") from error
+    if not isinstance(payload, dict):
+        raise ValueError("Event input must be a JSON object")
+    return payload
 
 
 def seed_demo(store: CalendarStore, selected_day: date) -> dict[str, object]:
@@ -97,12 +119,37 @@ def open_event_url(
     return 0
 
 
+def copy_meeting_url(
+    store: CalendarStore,
+    uid: str,
+    *,
+    command: str | None = None,
+    runner=subprocess.run,
+) -> int:
+    event = store.get_event(uid)
+    url = str(event.get("meeting_url") or "") if event else ""
+    if not is_safe_https_url(url):
+        print("This event does not provide a meeting link", file=sys.stderr)
+        return 4
+    executable = command or os.environ.get("OMARCHY_CALENDAR_COPY_COMMAND", "wl-copy")
+    try:
+        result = runner([executable], input=url, text=True, check=False)
+    except OSError:
+        print("Could not copy the meeting link", file=sys.stderr)
+        return 5
+    if getattr(result, "returncode", 0) != 0:
+        print("Could not copy the meeting link", file=sys.stderr)
+        return 5
+    return 0
+
+
 def setup_status(
     store: CalendarStore,
     settings: ProviderSettings,
     keyring: SecretServiceStore | None = None,
 ) -> dict[str, object]:
     health = store.health_records()
+    token_store = keyring or SecretServiceStore()
     providers = []
     for provider, label in (("google", "Google"), ("microsoft", "Outlook")):
         real = [item for item in health if item["provider"] == provider and not item["demo"]]
@@ -110,8 +157,20 @@ def setup_status(
         configured = bool(settings.client_id(provider))
         if provider == "google" and configured:
             configured = bool(
-                settings.google_app_credential(keyring or SecretServiceStore())
+                settings.google_app_credential(token_store)
             )
+        editing_accounts = []
+        token_get = getattr(token_store, "get", None)
+        if token_get:
+            for account in connected:
+                token = token_get(provider, str(account["account_id"])) or {}
+                scopes = set(str(token.get("scope") or "").split())
+                write_scope = (
+                    "https://www.googleapis.com/auth/calendar.events.owned"
+                    if provider == "google" else "Calendars.ReadWrite"
+                )
+                if write_scope in scopes:
+                    editing_accounts.append(str(account["account_id"]))
         providers.append({
             "provider": provider,
             "label": label,
@@ -119,6 +178,9 @@ def setup_status(
             "registration_source": settings.registration_source(provider),
             "connected": bool(connected),
             "accounts": len(real),
+            "editing": bool(editing_accounts),
+            "edit_accounts": len(editing_accounts),
+            "editing_account_ids": editing_accounts,
             "stale": any(bool(item["stale"]) for item in real),
             "last_sync": str(real[0]["last_sync"]) if real else "",
             "last_error": next((str(item["last_error"]) for item in real if item["last_error"]), ""),
@@ -127,6 +189,21 @@ def setup_status(
         "providers": providers,
         "demo": any(bool(item["demo"]) for item in health),
     }
+
+
+def edit_account_id(store: CalendarStore, provider: str, requested: str) -> str:
+    accounts = [
+        str(item["account_id"])
+        for item in store.accounts(provider)
+        if item["connected"]
+    ]
+    if requested:
+        if requested not in accounts:
+            raise ValueError("The connected account is not available")
+        return requested
+    if len(accounts) != 1:
+        raise ValueError("Use --account when the provider does not have exactly one connected account")
+    return accounts[0]
 
 
 def disconnect_provider(
@@ -218,7 +295,7 @@ def main(argv: list[str] | None = None) -> int:
                 emit({"providers": store.health_records(), "database": str(store.path)})
                 return 0
             if arguments.command == "setup-status":
-                emit(setup_status(store, ProviderSettings.load()))
+                emit(setup_status(store, ProviderSettings.load(), SecretServiceStore()))
                 return 0
             if arguments.command == "configure-client":
                 ProviderSettings.load().with_client_id(arguments.provider, arguments.client_id).save()
@@ -232,7 +309,17 @@ def main(argv: list[str] | None = None) -> int:
                 if not settings.client_id(arguments.provider):
                     print(f"{arguments.provider} public client ID is not configured", file=sys.stderr)
                     return 3
-                emit(Authenticator(store, settings=settings).authenticate(arguments.provider))
+                emit(Authenticator(store, settings=settings).authenticate(
+                    arguments.provider, access=arguments.access,
+                ))
+                return 0
+            if arguments.command == "enable-editing":
+                settings = ProviderSettings.load()
+                emit(Authenticator(store, settings=settings).authenticate(
+                    arguments.provider,
+                    access="edit",
+                    expected_account_id=edit_account_id(store, arguments.provider, arguments.account),
+                ))
                 return 0
             if arguments.command == "sync":
                 emit(SyncEngine(store).sync(arguments.provider))
@@ -248,11 +335,41 @@ def main(argv: list[str] | None = None) -> int:
             if arguments.command == "reset-local-data":
                 emit(reset_local_data(store, SecretServiceStore()))
                 return 0
+            if arguments.command in ("create-event", "update-event", "copy-event"):
+                draft = EventDraft.from_dict(read_stdin_json())
+                service = MutationService(store)
+                operation = {
+                    "create-event": service.create,
+                    "update-event": service.update,
+                    "copy-event": service.copy,
+                }[arguments.command]
+                emit(operation(draft))
+                return 0
+            if arguments.command == "delete-event":
+                payload = read_stdin_json()
+                if payload.get("confirmed") is not True:
+                    raise ValueError("Event deletion requires explicit confirmation")
+                uid = str(payload.get("uid") or "")
+                if not uid or len(uid) > 2048:
+                    raise ValueError("Event identity is invalid")
+                emit(MutationService(store).delete_event(
+                    uid,
+                    scope=str(payload.get("scope") or "single"),
+                    expected_revision=str(payload.get("expected_revision") or ""),
+                    series_revision=str(payload.get("series_revision") or ""),
+                    series_transfer_guard=payload.get("series_transfer_guard") is True,
+                ))
+                return 0
             if arguments.command == "open-meeting":
                 return open_event_url(store, arguments.uid, "meeting_url")
             if arguments.command == "open-source":
                 return open_event_url(store, arguments.uid, "provider_url")
-    except (ValueError, RuntimeError, KeyringError) as error:
+            if arguments.command == "copy-meeting":
+                result = copy_meeting_url(store, arguments.uid)
+                if result == 0:
+                    emit({"copied": True})
+                return result
+    except (ValueError, RuntimeError, PermissionError, KeyringError) as error:
         print(redact(str(error)), file=sys.stderr)
         return 2
     return 2
