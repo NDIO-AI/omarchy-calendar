@@ -12,6 +12,7 @@ Rectangle {
     property real textScale: 1
     property string providerStatus: ""
     property string actionError: ""
+    property string editAction: "edit"
     property int motionDuration: 140
     signal meetingRequested
     signal sourceRequested
@@ -127,12 +128,18 @@ Rectangle {
             }
             Text {
                 textFormat: Text.PlainText
+                id: meetingActionLabel
+                objectName: "meetingActionLabel"
                 anchors.centerIn: parent
-                text: root.hasMeeting ? "m  Join meeting" : "No meeting link"
+                width: parent.width - Style.space(12)
+                text: root.hasMeeting ? "m  Join" : "No meeting"
                 color: root.hasMeeting ? root.palette.background : root.palette.muted
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption * root.textScale
                 font.bold: true
+                horizontalAlignment: Text.AlignHCenter
+                elide: Text.ElideRight
+                clip: true
             }
             MouseArea {
                 anchors.fill: parent
@@ -150,12 +157,18 @@ Rectangle {
             opacity: root.hasSource ? 1 : 0.72
             Text {
                 textFormat: Text.PlainText
+                id: sourceActionLabel
+                objectName: "sourceActionLabel"
                 anchors.centerIn: parent
-                text: root.hasSource ? "o  Source" : "No source link"
+                width: parent.width - Style.space(12)
+                text: root.hasSource ? "o  Source" : "No source"
                 color: root.hasSource ? root.palette.foreground : root.palette.muted
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption * root.textScale
                 font.bold: true
+                horizontalAlignment: Text.AlignHCenter
+                elide: Text.ElideRight
+                clip: true
             }
             MouseArea {
                 anchors.fill: parent
@@ -172,12 +185,18 @@ Rectangle {
             border.color: root.eventData ? root.palette.accent : root.palette.border
             Text {
                 textFormat: Text.PlainText
+                id: editActionLabel
+                objectName: "editActionLabel"
                 anchors.centerIn: parent
-                text: "e  Edit"
+                width: parent.width - Style.space(12)
+                text: root.editAction === "enable" ? "e  Enable editing" : root.editAction === "cannot" ? "Cannot edit" : "e  Edit"
                 color: root.eventData ? root.palette.accent : root.palette.muted
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption * root.textScale
                 font.bold: true
+                horizontalAlignment: Text.AlignHCenter
+                elide: Text.ElideRight
+                clip: true
             }
             MouseArea {
                 anchors.fill: parent
@@ -194,12 +213,18 @@ Rectangle {
             border.color: root.eventData ? root.palette.border : root.palette.border
             Text {
                 textFormat: Text.PlainText
+                id: copyActionLabel
+                objectName: "copyActionLabel"
                 anchors.centerIn: parent
-                text: "d  Copy"
+                width: parent.width - Style.space(12)
+                text: "d  Duplicate"
                 color: root.eventData ? root.palette.foreground : root.palette.muted
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption * root.textScale
                 font.bold: true
+                horizontalAlignment: Text.AlignHCenter
+                elide: Text.ElideRight
+                clip: true
             }
             MouseArea {
                 anchors.fill: parent

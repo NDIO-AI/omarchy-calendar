@@ -3,6 +3,8 @@ import io
 import json
 import unittest
 import urllib.error
+import urllib.request
+import urllib.response
 from email.message import Message
 
 from omarchy_calendar.http import HttpError, ReadOnlyHttp, ReadOnlyViolation
@@ -34,6 +36,25 @@ class FakeOpener:
         if self.error:
             raise self.error
         return FakeResponse(self.payload)
+
+
+class RedirectingHttpsHandler(urllib.request.BaseHandler):
+    handler_order = 100
+
+    def __init__(self):
+        self.requests = []
+
+    def https_open(self, request):
+        self.requests.append((request.full_url, request.get_header("Authorization")))
+        headers = Message()
+        if request.full_url.startswith("https://www.googleapis.com/"):
+            headers["Location"] = "https://attacker.example/capture"
+            status, message, body = 302, "Found", b""
+        else:
+            status, message, body = 200, "OK", b"{}"
+        response = urllib.response.addinfourl(io.BytesIO(body), headers, request.full_url, status)
+        response.msg = message
+        return response
 
 
 class CalendarWriteHttpTests(unittest.TestCase):
@@ -87,6 +108,18 @@ class CalendarWriteHttpTests(unittest.TestCase):
         ):
             with self.subTest(url=url), self.assertRaises(WriteViolation):
                 http.request_json("POST", url, {})
+
+    def test_default_transport_rejects_redirect_without_forwarding_bearer(self):
+        handler = RedirectingHttpsHandler()
+        http = CalendarWriteHttp()
+        http.opener.add_handler(handler)
+        url = "https://www.googleapis.com/calendar/v3/calendars/work/events"
+
+        with self.assertRaises(HttpError) as caught:
+            http.request_json("POST", url, {}, headers={"Authorization": "Bearer private"})
+
+        self.assertEqual(caught.exception.status, 302)
+        self.assertEqual(handler.requests, [(url, "Bearer private")])
 
     def test_payload_size_and_provider_errors_are_safe(self):
         http = CalendarWriteHttp(opener=FakeOpener())

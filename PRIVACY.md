@@ -1,6 +1,6 @@
 # Flight Deck Calendar privacy
 
-Flight Deck Calendar is read-only by default. A user may opt in to event editing for a specific account. Flight Deck has no hosted backend, telemetry, analytics, advertising, or AI integration. Provider tokens and calendar data remain on the local workstation.
+Flight Deck Calendar is read-only by default. A user may opt in to event editing for a specific account. Flight Deck has no hosted backend, telemetry, analytics, advertising, or AI integration. Provider tokens and the local cache remain on the workstation. Changes the user saves go directly to the selected provider.
 
 ## Google user data we access
 
@@ -24,14 +24,16 @@ The developer cannot access calendar data or tokens because the app sends neithe
 
 ## Sharing and disclosure
 
-Flight Deck does not sell, share, or transfer Google user data to the developer, advertisers, analytics services, AI systems, or other third parties. Flight Deck does not integrate with AI services. The workstation communicates directly with Google and Microsoft to authorize the account, read the selected calendars, refresh the local cache, and send changes that the user explicitly saves.
+Flight Deck does not sell or disclose Google user data to the developer, advertisers, analytics services, or AI systems. Flight Deck does not integrate with AI services. The workstation communicates directly with Google and Microsoft to authorize the account, read selected calendars, refresh the local cache, and send changes that the user explicitly saves.
+
+When the user copies an event between Google and Outlook, the selected event fields are sent directly to the destination provider selected by the user. No copy passes through a Flight Deck server. The original event remains unchanged unless the user separately confirms its deletion.
 
 Flight Deck Calendar's use and transfer of information received from Google APIs adheres to the [Google API Services User Data Policy, including the Limited Use requirements](https://developers.google.com/terms/api-services-user-data-policy).
 
 ## Data protection
 
 - OAuth access and refresh tokens are stored in the desktop Secret Service keyring under the `omarchy-calendar` application attribute.
-- The local SQLite cache stores account identifiers and labels; calendar identifiers, names, and colors; event titles, times, locations, descriptions, organizers, status, and meeting and source links; and provider refresh health. It is stored at `~/.local/state/omarchy-calendar/calendar.db` with private file permissions. Its parent directory is accessible only to the local user.
+- The local SQLite cache stores account identifiers and labels; calendar identifiers, names, and colors; event titles, times, locations, descriptions, organizers, status, and meeting and source links; provider event and series identifiers, revision keys, time zones, recurrence details, ownership and writability flags, attendee presence, and supported meeting providers; synchronization state; and provider refresh health. It is stored at `~/.local/state/omarchy-calendar/calendar.db` with private file permissions. Its parent directory is accessible only to the local user.
 - Flight Deck communicates with Google and Microsoft over HTTPS. Meeting and source actions accept only HTTPS URLs returned with an event and pass each URL to the desktop opener without a shell.
 - Bundled Google and Microsoft desktop registrations are public application metadata shipped with the plugin. They are not account credentials and cannot grant access without the user's browser consent and tokens.
 - Advanced provider overrides may store public provider client IDs in `~/.config/omarchy-calendar/providers.json` with private file permissions. An imported Google Desktop app credential is stored in a separate Secret Service item.

@@ -26,9 +26,9 @@ class _TextExtractor(HTMLParser):
 
 def plain_text(source: str, limit: int = 4000) -> str:
     parser = _TextExtractor()
-    parser.feed(str(source or ""))
+    parser.feed(html.unescape(html.unescape(str(source or ""))))
     parser.close()
-    text = html.unescape("".join(parser.parts))
+    text = re.sub(r"<!--.*?-->", " ", "".join(parser.parts), flags=re.DOTALL)
     return re.sub(r"\s+", " ", text).strip()[:limit]
 
 

@@ -1,0 +1,556 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+set -euo pipefail
+
+project_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+plugin_id=io.github.joryeugene.omarchy-calendar
+temporary_root=
+native_backup=
+native_installed=
+native_was_open=0
+native_e2e_state=${XDG_RUNTIME_DIR:-/tmp}/flight-deck-e2e-native
+trap 'rm -rf -- "${temporary_root:-}"' EXIT
+
+fail() {
+  echo "FAIL $*" >&2
+  exit 2
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
+}
+
+copy_current_tree() {
+  local destination=$1
+  mkdir -p "$destination"
+  (
+    cd "$project_root"
+    git ls-files -co --exclude-standard -z |
+      tar --null --files-from=- --create
+  ) | tar --extract --directory "$destination"
+}
+
+run_isolated() (
+  for command in dbus-run-session gnome-keyring-daemon quickshell secret-tool; do require_command "$command"; done
+  local temporary_root plugin qml_runner
+  temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/flight-deck-e2e.XXXXXX")
+  trap 'rm -rf -- "$temporary_root"' EXIT
+  plugin="$temporary_root/home/.config/omarchy/plugins/$plugin_id"
+  copy_current_tree "$plugin"
+  cp -- "$plugin/tests/e2e_helper.py" "$plugin/calendarctl"
+  cp -- "$plugin/tests/e2e_panel_flow.qml" "$plugin/e2e-shell.qml"
+  cp -a -- "$plugin/tests/qml/qs/Ui" "$plugin/Ui"
+  cp -a -- "$plugin/tests/e2e_runtime/Commons" "$plugin/Commons"
+  chmod 755 "$plugin/calendarctl"
+  if command -v omarchy-plugin-validate >/dev/null 2>&1; then
+    omarchy-plugin-validate "$plugin"
+  elif command -v omarchy >/dev/null 2>&1; then
+    omarchy plugin validate "$plugin"
+  fi
+
+  qml_runner=$(command -v qmltestrunner || true)
+  [[ -n $qml_runner ]] || qml_runner=/usr/lib/qt6/bin/qmltestrunner
+  [[ -x $qml_runner ]] || fail "qmltestrunner is required"
+  QT_QPA_PLATFORM=offscreen QSG_RHI_BACKEND=software "$qml_runner" \
+    -input "$plugin/tests/qml" -import "$plugin/tests/qml" \
+    >"$temporary_root/qml.log" 2>&1
+
+  env \
+    FD_E2E_HOME="$temporary_root/home" \
+    FD_E2E_PLUGIN="$plugin" \
+    FD_E2E_RESULTS="$temporary_root/results" \
+    dbus-run-session -- bash -euo pipefail -c '
+      export HOME="$FD_E2E_HOME"
+      export XDG_CONFIG_HOME="$HOME/.config"
+      export XDG_DATA_HOME="$HOME/.local/share"
+      export XDG_STATE_HOME="$HOME/.local/state"
+      export XDG_CACHE_HOME="$HOME/.cache"
+      export XDG_RUNTIME_DIR="$HOME/.runtime"
+      export PATH="/usr/bin:$PATH"
+      mkdir -p "$XDG_RUNTIME_DIR" "$FD_E2E_RESULTS"
+      chmod 700 "$XDG_RUNTIME_DIR"
+      eval "$(printf '\n' | gnome-keyring-daemon --unlock --components=secrets 2>/dev/null)"
+      export FLIGHT_DECK_E2E_ROOT="$FD_E2E_PLUGIN/.e2e"
+      export FLIGHT_DECK_E2E_HELPER="$FD_E2E_PLUGIN/calendarctl"
+      printf isolated-value | secret-tool store --label=FlightDeckE2E application flight-deck-e2e account isolated
+      [[ $(secret-tool lookup application flight-deck-e2e account isolated) == isolated-value ]]
+      secret-tool clear application flight-deck-e2e account isolated
+      "$FD_E2E_PLUGIN/calendarctl" demo seed --date 2026-09-03 >"$FD_E2E_RESULTS/seed.json"
+      sha256sum "$FLIGHT_DECK_E2E_ROOT/state.json" >"$FD_E2E_RESULTS/before.sha"
+      "$FD_E2E_PLUGIN/calendarctl" view \
+        --from 2026-08-31T00:00:00-05:00 \
+        --to 2026-09-07T00:00:00-05:00 >"$FD_E2E_RESULTS/view.json"
+      "$FD_E2E_PLUGIN/calendarctl" status >"$FD_E2E_RESULTS/status.json"
+      "$FD_E2E_PLUGIN/calendarctl" setup-status >"$FD_E2E_RESULTS/setup.json"
+      sha256sum "$FLIGHT_DECK_E2E_ROOT/state.json" >"$FD_E2E_RESULTS/after.sha"
+    '
+  env \
+    FLIGHT_DECK_E2E_ROOT="$plugin/.e2e" \
+    FLIGHT_DECK_E2E_HELPER="$plugin/calendarctl" \
+    timeout 30s quickshell --no-color -p "$plugin/e2e-shell.qml" \
+      >"$temporary_root/results/panel.log" 2>&1
+
+  python - "$temporary_root/results" "$plugin/.e2e/commands.jsonl" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+read = lambda name: json.loads((root / f"{name}.json").read_text())
+seed, view, status, setup = map(read, ("seed", "view", "status", "setup"))
+assert seed["seeded"] == 6 and seed["accounts"] == 4
+assert len(view["events"]) == 6
+assert {event["provider"] for event in view["events"]} == {"google", "microsoft"}
+assert len(status["providers"]) == 4
+assert all(provider["client_configured"] for provider in setup["providers"])
+assert (root / "before.sha").read_text() == (root / "after.sha").read_text()
+panel = (root / "panel.log").read_text()
+assert "E2E RESULT failures=0" in panel
+assert not any(item in panel for item in ("E2E FAIL", "TypeError", "ReferenceError", "Binding loop"))
+records = [json.loads(line) for line in Path(sys.argv[2]).read_text().splitlines()]
+arguments = [row["arguments"] for row in records]
+for expected in (
+    ["enable-editing", "google", "--account", "google-read"],
+    ["enable-editing", "google", "--account", "google-denial"],
+    ["enable-editing", "google", "--account", "google-wrong"],
+    ["enable-editing", "microsoft", "--account", "outlook-read"],
+    ["disconnect", "google", "--account", "google-wrong"],
+):
+    assert expected in arguments
+mutations = [row for row in records if row["arguments"][0] in {"create-event", "update-event", "copy-event", "delete-event"}]
+assert {row["arguments"][0] for row in mutations} == {"create-event", "update-event", "copy-event", "delete-event"}
+assert all(isinstance(row["stdin"], dict) for row in mutations)
+assert all(len(row["arguments"]) == 1 for row in mutations)
+print("PASS isolated installed editor, authorization routing, stdin mutations, and cache boundaries")
+PY
+)
+
+calendar_cache_hash() {
+  local database=$1
+  if [[ ! -f $database ]]; then
+    printf 'absent\n'
+    return
+  fi
+  python - "$database" <<'PY'
+import hashlib
+import json
+import sqlite3
+import sys
+
+connection = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+payload = {}
+for table in ("calendars", "events", "provider_health"):
+    columns = [row[1] for row in connection.execute(f"pragma table_info({table})")]
+    payload[table] = [dict(zip(columns, row)) for row in connection.execute(f"select * from {table} order by 1, 2")]
+encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+print(hashlib.sha256(encoded).hexdigest())
+PY
+}
+
+panel_monitor() {
+  hyprctl -j layers | python -c '
+import json, sys
+layers = json.load(sys.stdin)
+for name, monitor in layers.items():
+    if any(
+        item.get("namespace") == "omarchy-keyboard-panel"
+        for level in monitor.get("levels", {}).values()
+        for item in level
+    ):
+        print(name)
+'
+}
+
+panel_is_open() {
+  [[ -n $(panel_monitor) ]]
+}
+
+poll_panel() {
+  local expected=$1
+  for _ in {1..100}; do
+    if panel_is_open; then
+      [[ $expected == open ]] && return 0
+    else
+      [[ $expected == closed ]] && return 0
+    fi
+    sleep 0.05
+  done
+  return 1
+}
+
+summon_panel() {
+  local monitor=$1 actual
+  for _ in {1..4}; do
+    omarchy-shell shell summon "$plugin_id" '{}' >/dev/null 2>&1 || return 1
+    for _ in {1..100}; do
+      actual=$(panel_monitor)
+      [[ $actual == "$monitor" ]] && { poll_visible_text "$monitor" "NEW N"; return; }
+      [[ -z $actual ]] || break
+      sleep 0.05
+    done
+    omarchy-shell -q shell hide "$plugin_id" >/dev/null
+    poll_panel closed || return 1
+    focus_monitor "$monitor"
+  done
+  return 1
+}
+
+ocr_text() {
+  local monitor=$1 shot="$temporary_root/ocr-$monitor.png"
+  grim -o "$monitor" "$shot"
+  tesseract "$shot" stdout --psm 6 2>/dev/null | tr '[:lower:]\n' '[:upper:] '
+}
+
+ocr_regions() {
+  local monitor=$1 shot="$temporary_root/ocr-$monitor.png" crop="$temporary_root/ocr-$monitor-region.png" width height x y crop_width crop_height header_height
+  read -r width height < <(magick identify -format '%w %h' "$shot")
+  crop_height=$((height * 85 / 100))
+  y=$((height * 5 / 100))
+  x=$((width * 15 / 100)); crop_width=$((width * 50 / 100))
+  {
+    magick "$shot" -crop "${crop_width}x${crop_height}+${x}+${y}" +repage "$crop"
+    tesseract "$crop" stdout --psm 6 2>/dev/null
+    x=$((width * 65 / 100)); crop_width=$((width * 30 / 100))
+    magick "$shot" -crop "${crop_width}x${crop_height}+${x}+${y}" +repage "$crop"
+    tesseract "$crop" stdout --psm 6 2>/dev/null
+    header_height=$((height * 30 / 100))
+    magick "$shot" -crop "${crop_width}x${header_height}+${x}+${y}" +repage "$crop"
+    tesseract "$crop" stdout --psm 6 2>/dev/null
+  } | tr '[:lower:]\n' '[:upper:] '
+}
+
+poll_visible_text() {
+  local monitor=$1 expected=${2^^} visible
+  for _ in {1..20}; do
+    visible=$(ocr_text "$monitor")
+    [[ $visible == *"$expected"* ]] || visible="$visible $(ocr_regions "$monitor")"
+    [[ $visible == *"$expected"* ]] && return 0
+    sleep 0.05
+  done
+  cp -- "$temporary_root/ocr-$monitor.png" "${TMPDIR:-/tmp}/flight-deck-e2e-failure-$monitor.png"
+  fail "$monitor did not show: $2 (visible: ${visible:0:320})"
+}
+
+native_send_key() {
+  local modifiers=$1 key=$2 state
+  for state in down up; do
+    hyprctl eval "hl.dispatch(hl.dsp.send_key_state({ mods = '$modifiers', key = '$key', state = '$state' }))" >/dev/null
+  done
+}
+
+native_key() {
+  local monitor=$1 key=$2 expected=$3
+  if [[ $key == "?" ]]; then native_send_key SHIFT slash; else native_send_key "" "$key"; fi
+  poll_visible_text "$monitor" "$expected"
+}
+
+native_combo() {
+  local monitor=$1 modifier=$2 key=$3 expected=$4
+  native_send_key "${modifier^^}" "${key^^}"
+  poll_visible_text "$monitor" "$expected"
+}
+
+native_command_count() {
+  local command=$1 log="$native_e2e_state/commands.jsonl"
+  [[ -f $log ]] || { echo 0; return; }
+  grep -cF "\"arguments\":[\"$command\"" "$log" || true
+}
+
+poll_native_command() {
+  local command=$1 previous=$2 log="$native_e2e_state/commands.jsonl"
+  for _ in {1..100}; do
+    (( $(native_command_count "$command") > previous )) && return 0
+    sleep 0.05
+  done
+  [[ ! -f $log ]] || tail -n 8 "$log" >&2
+  fail "$command did not reach the deterministic helper"
+}
+
+native_save() {
+  local monitor=$1 previous
+  previous=$(native_command_count update-event)
+  native_send_key CTRL Return
+  poll_native_command update-event "$previous"
+  poll_visible_text "$monitor" "EVENT DETAILS"
+}
+
+focused_monitor() {
+  hyprctl -j monitors | python -c 'import json,sys; print(next(item["name"] for item in json.load(sys.stdin) if item["focused"]))'
+}
+
+focus_monitor() {
+  local target=$1
+  hyprctl eval "hl.dispatch(hl.dsp.focus({ monitor = '+1' }))" >/dev/null
+  for _ in {1..40}; do
+    [[ $(focused_monitor) == "$target" ]] && return 0
+    hyprctl eval "hl.dispatch(hl.dsp.focus({ monitor = '+1' }))" >/dev/null
+    sleep 0.05
+  done
+  fail "could not focus $target"
+}
+
+poll_bar_ready() {
+  local expected=$1 count
+  for _ in {1..100}; do
+    count=$(omarchy-shell shell debugBarGeometry 2>/dev/null | python -c '
+import json, sys
+rows = json.load(sys.stdin)
+print(sum(row.get("id") == "io.github.joryeugene.omarchy-calendar" and row.get("visible") for row in rows))
+' 2>/dev/null || echo 0)
+    [[ $count -ge $expected ]] && return 0
+    sleep 0.05
+  done
+  fail "calendar bar widgets did not become ready"
+}
+
+poll_sync_idle() {
+  for _ in {1..200}; do
+    pgrep -f -- "$native_installed/calendarctl sync" >/dev/null || return 0
+    sleep 0.05
+  done
+  fail "calendar sync did not finish"
+}
+
+restore_native_install() {
+  [[ -n ${native_installed:-} ]] || return 0
+  omarchy-shell shell hide "$plugin_id" >/dev/null 2>&1 || true
+  if [[ -d $native_backup/installed ]]; then
+    [[ ! -L $native_installed ]] || return 1
+    [[ ! -e $native_backup/tested ]] || return 1
+    [[ ! -e $native_installed ]] || mv -- "$native_installed" "$native_backup/tested"
+    mv -- "$native_backup/installed" "$native_installed"
+    omarchy-restart-shell >/dev/null 2>&1 || return 1
+    if (( native_was_open )); then
+      summon_panel "$(focused_monitor)" || true
+    fi
+  fi
+  if [[ -d $native_e2e_state && $native_e2e_state == */flight-deck-e2e-native ]]; then
+    rm -rf -- "$native_e2e_state"
+  fi
+}
+
+cleanup_native() {
+  restore_native_install
+  rm -rf -- "${temporary_root:-}"
+}
+
+run_native() {
+  [[ ${FLIGHT_DECK_NATIVE_E2E:-} == 1 ]] || fail "set FLIGHT_DECK_NATIVE_E2E=1"
+  for command in flock git grim hyprctl magick omarchy-restart-shell omarchy-shell tesseract; do require_command "$command"; done
+  exec 9>"${XDG_RUNTIME_DIR:-/tmp}/flight-deck-e2e-native.lock"
+  flock -n 9 || fail "another native Flight Deck E2E run is active"
+  [[ $(omarchy-shell shell ping) == ok ]] || fail "Omarchy shell is not healthy"
+  panel_is_open || fail "Flight Deck must be open before the native E2E run"
+  native_was_open=1
+
+  local monitor_data monitor_count state_root database before_hash after_hash seed_day seed_label today_day today_label
+  monitor_data=$(hyprctl -j monitors)
+  monitor_count=$(python -c 'import json,sys; print(len(json.load(sys.stdin)))' <<<"$monitor_data")
+  [[ $monitor_count -eq 2 ]] || fail "native E2E requires exactly two active monitors"
+  state_root=${XDG_STATE_HOME:-$HOME/.local/state}
+  database="$state_root/omarchy-calendar/calendar.db"
+  seed_day=$(date --date=yesterday +%F)
+  today_day=$(date +%F)
+  seed_label=$(LC_ALL=C date --date="$seed_day" '+%A, %B %-d')
+  today_label=$(LC_ALL=C date '+%A, %B %-d')
+  seed_label=${seed_label^^}
+  today_label=${today_label^^}
+
+  temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/flight-deck-e2e.XXXXXX")
+  native_backup="$temporary_root/backup"
+  native_installed="$HOME/.config/omarchy/plugins/$plugin_id"
+  [[ -d $native_installed && ! -L $native_installed ]] || fail "installed Flight Deck directory is unavailable"
+  mkdir -p "$native_backup"
+  copy_current_tree "$temporary_root/staged"
+  cp -- "$temporary_root/staged/tests/e2e_native_helper" "$temporary_root/staged/calendarctl"
+  chmod 755 "$temporary_root/staged/calendarctl"
+  omarchy plugin validate "$temporary_root/staged"
+  trap cleanup_native EXIT
+  trap 'exit 130' INT TERM
+  omarchy-shell shell hide "$plugin_id"
+  poll_panel closed || fail "the open panel was not Flight Deck"
+  mv -- "$native_installed" "$native_backup/installed"
+  mv -- "$temporary_root/staged" "$native_installed"
+  omarchy-restart-shell
+
+  local qml_runner
+  qml_runner=$(command -v qmltestrunner || true)
+  [[ -n $qml_runner ]] || qml_runner=/usr/lib/qt6/bin/qmltestrunner
+  QT_QPA_PLATFORM=offscreen QSG_RHI_BACKEND=software "$qml_runner" \
+    -input "$native_installed/tests/qml" -import "$native_installed/tests/qml"
+  poll_sync_idle
+  before_hash=$(calendar_cache_hash "$database")
+
+  while IFS=$'\t' read -r monitor x y width height scale; do
+    [[ $width -eq 2560 && $height -eq 1440 && $scale == 1.25 ]] ||
+    fail "$monitor is not 2560x1440 at 1.25 scale"
+    focus_monitor "$monitor"
+    omarchy-restart-shell
+    poll_bar_ready "$monitor_count"
+    focus_monitor "$monitor"
+    omarchy-shell -q notifications dismiss "Kinetic voice blocked"
+    hyprctl eval "hl.dispatch(hl.dsp.cursor.move({ x = $((x + width / 2)), y = $((y + height / 2)) }))"
+    "$native_installed/calendarctl" demo seed --date "$seed_day" >/dev/null
+    summon_panel "$monitor" || fail "Flight Deck did not open on $monitor"
+    native_key "$monitor" g "$today_label"
+    native_key "$monitor" h "$seed_label"
+    poll_visible_text "$monitor" "ALL-DAY RELEASE"
+    native_key "$monitor" t "$seed_label"
+    for _ in {1..8}; do native_send_key "" k; done
+    poll_visible_text "$monitor" "ALL-DAY RELEASE"
+    previous=$(native_command_count enable-editing)
+    native_key "$monitor" e "ACCOUNTS AND CALENDARS"
+    native_send_key "" Return
+    poll_native_command enable-editing "$previous"
+    poll_visible_text "$monitor" "EDIT EVENT"
+    native_combo "$monitor" shift l "$today_day"
+    native_save "$monitor"
+    native_key "$monitor" n "NEW EVENT"
+    native_key "$monitor" Escape "EVENT DETAILS"
+    native_key "$monitor" h "$seed_label"
+    for _ in {1..8}; do native_send_key "" k; done
+    poll_visible_text "$monitor" "READ-ONLY DESIGN REVIEW"
+    native_key "$monitor" j "WEEKLY REVIEW"
+    native_key "$monitor" d "COPY EVENT"
+    native_key "$monitor" Escape "EVENT DETAILS"
+    native_combo "$monitor" shift j "10:15"
+    native_save "$monitor"
+    native_key "$monitor" s "APPEARANCE"
+    native_key "$monitor" Escape "EVENT DETAILS"
+    native_key "$monitor" "?" "KEYBOARD MAP"
+    native_key "$monitor" Escape "EVENT DETAILS"
+    omarchy-shell shell hide "$plugin_id"
+    poll_panel closed || fail "Flight Deck did not close on $monitor"
+  done < <(python -c '
+import json,sys
+for monitor in json.load(sys.stdin):
+    print(monitor["name"], monitor["x"], monitor["y"], monitor["width"], monitor["height"], monitor["scale"], sep="\t")
+' <<<"$monitor_data")
+
+  [[ -z $(hyprctl configerrors) ]] || fail "Hyprland reports configuration errors"
+  [[ $(omarchy-shell shell ping) == ok ]] || fail "Omarchy shell stopped responding"
+  after_hash=$(calendar_cache_hash "$database")
+  [[ $before_hash == "$after_hash" ]] || fail "calendar or account cache changed during native E2E"
+  restore_native_install
+  echo "PASS reversible installed two-monitor keyboard run plus Qt pointer interactions"
+}
+
+run_live() {
+  [[ ${FLIGHT_DECK_LIVE_WRITE_E2E:-} == 1 ]] || fail "set FLIGHT_DECK_LIVE_WRITE_E2E=1"
+  for name in \
+    FLIGHT_DECK_GOOGLE_SOURCE_CALENDAR \
+    FLIGHT_DECK_GOOGLE_DESTINATION_CALENDAR \
+    FLIGHT_DECK_OUTLOOK_SOURCE_CALENDAR \
+    FLIGHT_DECK_OUTLOOK_DESTINATION_CALENDAR; do
+    [[ -n ${!name:-} ]] || fail "set $name"
+  done
+  for command in dbus-run-session gnome-keyring-daemon; do require_command "$command"; done
+  local temporary_root plugin live_browser_desktop live_browser_exec live_browser_command
+  live_browser_exec=${FLIGHT_DECK_LIVE_BROWSER:-}
+  live_browser_desktop=$(env -u BROWSER xdg-settings get default-web-browser)
+  [[ -n $live_browser_exec ]] || live_browser_exec=$(sed -n 's/^Exec=\([^ ]*\).*/\1/p' \
+    "$HOME/.local/share/applications/$live_browser_desktop" \
+    "/usr/share/applications/$live_browser_desktop" 2>/dev/null | head -n 1)
+  live_browser_command=${live_browser_exec%% *}
+  command -v "$live_browser_command" >/dev/null || fail "could not resolve the workstation default browser"
+  temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/flight-deck-e2e.XXXXXX")
+  trap 'rm -rf -- "$temporary_root"' EXIT
+  plugin="$temporary_root/plugin"
+  copy_current_tree "$plugin"
+  env \
+    FD_LIVE_HOME="$temporary_root/home" \
+    FD_LIVE_BROWSER="$live_browser_exec" \
+    FLIGHT_DECK_LIVE_HELPER="$plugin/calendarctl" \
+    FLIGHT_DECK_GOOGLE_SOURCE_CALENDAR="$FLIGHT_DECK_GOOGLE_SOURCE_CALENDAR" \
+    FLIGHT_DECK_GOOGLE_DESTINATION_CALENDAR="$FLIGHT_DECK_GOOGLE_DESTINATION_CALENDAR" \
+    FLIGHT_DECK_OUTLOOK_SOURCE_CALENDAR="$FLIGHT_DECK_OUTLOOK_SOURCE_CALENDAR" \
+    FLIGHT_DECK_OUTLOOK_DESTINATION_CALENDAR="$FLIGHT_DECK_OUTLOOK_DESTINATION_CALENDAR" \
+    dbus-run-session -- bash -euo pipefail -c '
+      export HOME="$FD_LIVE_HOME"
+      export XDG_CONFIG_HOME="$HOME/.config"
+      export XDG_DATA_HOME="$HOME/.local/share"
+      export XDG_STATE_HOME="$HOME/.local/state"
+      export XDG_CACHE_HOME="$HOME/.cache"
+      export XDG_RUNTIME_DIR="$HOME/.runtime"
+      export BROWSER="$FD_LIVE_BROWSER"
+      mkdir -p "$XDG_RUNTIME_DIR"
+      chmod 700 "$XDG_RUNTIME_DIR"
+      eval "$(printf '\n' | gnome-keyring-daemon --unlock --components=secrets 2>/dev/null)"
+      python "$(dirname "$FLIGHT_DECK_LIVE_HELPER")/tests/live_write_e2e.py"
+    '
+}
+
+run_release() {
+  [[ -z $(git -C "$project_root" status --porcelain) ]] || fail "release requires a clean working tree"
+  for command in docker git gitleaks uv; do require_command "$command"; done
+  "$project_root/scripts/check" --release
+  gitleaks git --redact=100 --no-banner --config "$project_root/.gitleaks.toml" "$project_root"
+  omarchy plugin validate "$project_root"
+
+  temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/flight-deck-e2e.XXXXXX")
+  local archive="$temporary_root/source.tar" source="$temporary_root/source" package="$temporary_root/package" wheelhouse="$temporary_root/dist" anonymous="$temporary_root/anonymous"
+  mkdir -p "$source" "$wheelhouse"
+  git -C "$project_root" archive --format=tar --output="$archive" HEAD
+  tar --extract --file="$archive" --directory="$source"
+  git -C "$source" init -q
+  git -C "$source" config user.email release-check@example.com
+  git -C "$source" config user.name "Release Check"
+  git -C "$source" add .
+  git -C "$source" commit -qm snapshot
+  cp -a -- "$source" "$package"
+  uv build --wheel --out-dir "$wheelhouse" "$package"
+  python - "$wheelhouse" <<'PY'
+import sys
+import zipfile
+from pathlib import Path
+
+wheels = list(Path(sys.argv[1]).glob("*.whl"))
+assert len(wheels) == 1
+with zipfile.ZipFile(wheels[0]) as archive:
+    names = archive.namelist()
+assert any(name.endswith("entry_points.txt") for name in names)
+assert not any("/tests/" in name or "/.quality/" in name or "/.private/" in name for name in names)
+print("PASS wheel contents")
+PY
+
+  for version in 3.11 3.12; do
+    docker run --rm \
+      --mount "type=bind,src=$source,dst=/src,readonly" \
+      --tmpfs /tmp:exec,mode=1777 \
+      "python:$version-slim" bash -euo pipefail -c '
+        apt-get update >/dev/null
+        DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+          git libsecret-tools nodejs qt6-declarative-dev-tools \
+          qml6-module-qtquick qml6-module-qtquick-window \
+          qml6-module-qtqml-workerscript qml6-module-qttest >/dev/null
+        git config --global --add safe.directory /src
+        cd /src
+        scripts/check --release
+      '
+  done
+  git clone --quiet --no-local "$project_root" "$anonymous"
+  env \
+    PYTHONDONTWRITEBYTECODE=1 \
+    XDG_CONFIG_HOME="$temporary_root/anonymous-config" \
+    XDG_STATE_HOME="$temporary_root/anonymous-state" \
+    "$anonymous/calendarctl" demo seed --date 2026-09-03 >/dev/null
+  env \
+    PYTHONDONTWRITEBYTECODE=1 \
+    XDG_CONFIG_HOME="$temporary_root/anonymous-config" \
+    XDG_STATE_HOME="$temporary_root/anonymous-state" \
+    "$anonymous/calendarctl" view \
+      --from 2026-09-03T00:00:00-05:00 --to 2026-09-04T00:00:00-05:00 >/dev/null
+  run_isolated
+  echo "PASS release gate"
+}
+
+case ${1:-} in
+  isolated) run_isolated ;;
+  native) run_native ;;
+  live) run_live ;;
+  release) run_release ;;
+  *) fail "usage: scripts/e2e {isolated|native|live|release}" ;;
+esac
+
+rm -rf -- "${temporary_root:-}"
+trap - EXIT INT TERM

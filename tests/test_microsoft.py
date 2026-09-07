@@ -41,18 +41,27 @@ class FakeHttp:
             if "$skiptoken=event-page-2" in url:
                 return {"value": []}
             return load_fixture("microsoft-events.json")
+        if "/events/mentor-series" in parsed.path:
+            return {
+                "id": "mentor-series", "changeKey": "series-change-1",
+                "start": {"dateTime": "2026-08-05T15:00:00", "timeZone": "UTC"},
+                "end": {"dateTime": "2026-08-05T16:00:00", "timeZone": "UTC"},
+            }
         raise AssertionError(f"unexpected URL: {url}")
 
 
 class MicrosoftProviderTests(unittest.TestCase):
     def test_personal_event_keeps_teams_and_outlook_links(self):
-        raw = load_fixture("microsoft-events.json")["value"][0]
+        raw = {
+            **load_fixture("microsoft-events.json")["value"][0],
+            "body": {"contentType": "html", "content": "<p>Full notes beyond the preview.</p>"},
+        }
         result = normalize_microsoft_event(raw, ACCOUNT, CALENDAR)
 
         self.assertEqual(result.meeting_url, "https://teams.microsoft.com/l/meetup-join/demo")
         self.assertEqual(result.provider_url, raw["webLink"])
         self.assertEqual(result.provider, "microsoft")
-        self.assertEqual(result.description, "Talk through the next milestone.")
+        self.assertEqual(result.description, "Full notes beyond the preview.")
         self.assertEqual(result.uid, "microsoft:personal-id:calendar-primary:outlook-event-1")
         self.assertEqual(result.provider_event_id, "outlook-event-1")
         self.assertEqual(result.revision, "outlook-change-1")
@@ -60,6 +69,8 @@ class MicrosoftProviderTests(unittest.TestCase):
         self.assertEqual(result.recurrence_id, "mentor-series")
         self.assertEqual(result.event_type, "occurrence")
         self.assertTrue(result.organizer_owned)
+        self.assertEqual(result.start_day, "2026-08-25")
+        self.assertEqual(result.end_day, "2026-08-25")
 
     def test_all_day_is_utc_and_cancelled_is_skipped(self):
         items = load_fixture("microsoft-events.json")["value"]
@@ -68,7 +79,52 @@ class MicrosoftProviderTests(unittest.TestCase):
 
         self.assertTrue(all_day.all_day)
         self.assertEqual(all_day.start, "2026-08-25T00:00:00+00:00")
+        self.assertEqual(all_day.start_day, "2026-08-25")
+        self.assertEqual(all_day.end_day, "2026-08-26")
         self.assertIsNone(cancelled)
+
+    def test_event_records_attendees_and_draft_time_series_revision(self):
+        raw = {
+            **load_fixture("microsoft-events.json")["value"][0],
+            "_seriesRevision": "series-change-1",
+        }
+
+        result = normalize_microsoft_event(raw, ACCOUNT, CALENDAR)
+
+        self.assertTrue(result.has_attendees)
+        self.assertEqual(result.series_revision, "series-change-1")
+
+        raw["attendees"] = []
+        self.assertFalse(normalize_microsoft_event(raw, ACCOUNT, CALENDAR).has_attendees)
+
+    def test_is_organizer_is_authoritative_with_address_fallback_when_absent(self):
+        base = load_fixture("microsoft-events.json")["value"][0]
+        cases = (
+            ({**base, "isOrganizer": False}, False),
+            ({
+                **base,
+                "isOrganizer": True,
+                "organizer": {"emailAddress": {"address": "delegate@example.com"}},
+            }, True),
+            (base, True),
+        )
+
+        for raw, expected in cases:
+            with self.subTest(is_organizer=raw.get("isOrganizer", "absent")):
+                self.assertEqual(
+                    normalize_microsoft_event(raw, ACCOUNT, CALENDAR).organizer_owned,
+                    expected,
+                )
+
+    def test_series_master_metadata_keeps_draft_time_schedule(self):
+        http = FakeHttp()
+        _, _, events = MicrosoftProvider(http, timezone="America/Chicago").fetch_window(
+            "access-token", "2026-08-25T00:00:00Z", "2026-08-27T00:00:00Z"
+        )
+
+        occurrence = next(item for item in events if item.recurrence_id)
+        self.assertEqual(occurrence.series_start, "2026-08-05T15:00:00+00:00")
+        self.assertEqual(occurrence.series_end, "2026-08-05T16:00:00+00:00")
 
     def test_event_normalization_accepts_graphs_iana_timezones(self):
         raw = dict(
@@ -108,11 +164,17 @@ class MicrosoftProviderTests(unittest.TestCase):
         self.assertEqual(calendars[0].timezone, "America/Chicago")
         self.assertEqual(calendars[0].meeting_providers, ("teamsForBusiness",))
         self.assertEqual(len(events), 4)
+        self.assertTrue(all(event.series_revision == "series-change-1" for event in events if event.recurrence_id))
         self.assertTrue(any("$skiptoken=calendar-page-2" in call[0] for call in http.calls))
         self.assertGreaterEqual(sum("$skiptoken=event-page-2" in call[0] for call in http.calls), 2)
         view_calls = [call for call in http.calls if "/calendarView" in call[0]]
         self.assertTrue(all(call[1]["Prefer"] == 'outlook.timezone="America/Chicago"' for call in view_calls))
         self.assertTrue(all("startDateTime=" in call[0] and "endDateTime=" in call[0] for call in view_calls if "$skiptoken" not in call[0]))
+        self.assertTrue(all("body" in parse_qs(urlparse(call[0]).query)["$select"][0].split(",") for call in view_calls if "$skiptoken" not in call[0]))
+        self.assertTrue(all("isOrganizer" in parse_qs(urlparse(call[0]).query)["$select"][0].split(",") for call in view_calls if "$skiptoken" not in call[0]))
+        selected = parse_qs(urlparse(view_calls[0][0]).query)["$select"][0].split(",")
+        self.assertIn("attendees", selected)
+        self.assertNotIn("hasAttendees", selected)
         calendar_call = next(call[0] for call in http.calls if "/me/calendars" in call[0])
         self.assertNotIn("timeZone", parse_qs(urlparse(calendar_call).query)["$select"][0])
 

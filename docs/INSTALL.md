@@ -1,6 +1,6 @@
 # Flight Deck Calendar installation
 
-Flight Deck Calendar puts Google Calendar and Outlook in one read-only Omarchy panel. It does not install a separate helper, timer, or service, and it does not change Hyprland automatically.
+Flight Deck Calendar puts Google Calendar and Outlook in one Omarchy panel. Read-only access remains the default. It does not install a separate helper, timer, or service, and it does not change Hyprland automatically.
 
 ## Install
 
@@ -68,7 +68,7 @@ Provider client-ID overrides are written to `~/.config/omarchy-calendar/provider
 
 ## Enable optional event editing
 
-Choose **Read and edit** while connecting a new account, or upgrade an existing account from Flight Deck when the editor asks for permission. Google adds `calendar.events.owned`; Outlook adds `Calendars.ReadWrite`. The read-only scopes remain available so Today, Week, and calendar filtering continue to work.
+Choose **Read and edit** while connecting a new account, or choose **Enable editing** for an existing account in **Accounts and Calendars**. A blocked create, edit, duplicate, or quick-move action opens that exact account action and resumes only after successful consent. Google adds `calendar.events.owned`; Outlook adds `Calendars.ReadWrite`. The read-only scopes remain available so Today, Week, and calendar filtering continue to work.
 
 The terminal provides the same account-specific upgrade:
 
@@ -78,6 +78,22 @@ The terminal provides the same account-specific upgrade:
 ```
 
 Editing is limited to calendars owned by the connected account. Only changes confirmed with Save are sent to the provider. Delete requires a second confirmation. Copying an event to another calendar does not delete the original event, and Flight Deck offers Delete original only after the destination copy has been verified.
+
+New events can repeat daily, on weekdays, weekly, monthly, or on selected weekdays. A series can continue indefinitely, stop after a set number of events, or end on a date. Existing recurring events can apply a change to **This occurrence** or the **Entire series**. **This and following** is not supported.
+
+An **Entire series** copy transfers the supported base schedule. Flight Deck checks the source series for modified or cancelled occurrences before offering Delete original. It offers Delete original only when the scan is complete and finds none; otherwise, it keeps the original series and explains why.
+
+When an event already has a meeting link, a copy can keep the existing meeting link or generate a new meeting when the destination calendar reports that capability. Flight Deck verifies the destination event before reporting success. If the provider has not returned a generated link yet, Flight Deck reports that the meeting link is still pending and leaves the original unchanged.
+
+Flight Deck offers Delete original only when the source is eligible for deletion, online, and authorized for event editing. An event is not eligible when it has attendees, the connected user is not its organizer, or its source calendar is shared or read-only. If the source account lacks write permission, the result offers a separate permission upgrade. Granting that permission never deletes the original automatically.
+
+For a cross-provider copy, Flight Deck sends the title, day and time, all-day state, location, notes, supported recurrence, and meeting choice directly from the workstation to the destination provider over HTTPS. No event data passes through a Flight Deck server. The destination event is created and verified before Flight Deck offers any action on the source event. If an existing provider series cannot be represented by the supported recurrence presets, Flight Deck refuses the copy instead of flattening the series into one event.
+
+Events with attendees are duplicate-only in this release. Flight Deck does not edit, delete, or send invitations for them.
+
+Dragging and resizing change only the local draft. The unsaved draft remains available while the provider is offline, and Save remains disabled until the account is online. If a provider revision no longer matches the cached event, Flight Deck cancels the write, refreshes the provider event, and preserves the local draft for review. If a create request is retried after an uncertain response, Flight Deck reuses the same provider request identifier so the retry does not create a second event.
+
+The editor uses `j` and `k` to move between fields and `h` and `l` to change the selected value. `Shift+H` and `Shift+L` move the local draft by one day. `Shift+J` and `Shift+K` move a timed local draft by 15 minutes; all-day events move by day only. Press `Enter` on the recurrence scope to choose **This occurrence** or **Entire series**, and press it on Delete to reveal and confirm the deletion. Press `Ctrl+Enter` to save or `Esc` to cancel. After a copy, press `k` to keep both events, `e` to enable source editing when required, or `x` twice to reveal and confirm Delete original.
 
 ## Operations
 

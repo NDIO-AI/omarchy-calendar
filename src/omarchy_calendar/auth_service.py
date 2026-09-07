@@ -10,6 +10,7 @@ from .http import ReadOnlyHttp
 from .keyring import SecretServiceStore
 from .models import ProviderHealth
 from .oauth import (
+    GOOGLE_EDIT_SCOPES,
     GOOGLE_SCOPES,
     MICROSOFT_EDIT_SCOPES,
     MICROSOFT_SCOPES,
@@ -78,13 +79,28 @@ class Authenticator:
             "redirect_uri": receiver.redirect_uri,
             "grant_type": "authorization_code",
         }
+        requested_scopes = (
+            GOOGLE_EDIT_SCOPES if provider == "google" and access == "edit"
+            else GOOGLE_SCOPES if provider == "google"
+            else MICROSOFT_EDIT_SCOPES if access == "edit"
+            else MICROSOFT_SCOPES
+        )
         if provider == "google":
             form["client_secret"] = app_credential
         else:
-            scopes = MICROSOFT_EDIT_SCOPES if access == "edit" else MICROSOFT_SCOPES
-            form["scope"] = " ".join(scopes)
+            form["scope"] = " ".join(requested_scopes)
         response = self.http.post_token(TOKEN_ENDPOINTS[provider], form)
+        granted_scope = str(response.get("scope") or " ".join(requested_scopes))
+        if access == "edit":
+            write_scope = (
+                GOOGLE_EDIT_SCOPES[-1]
+                if provider == "google" else MICROSOFT_EDIT_SCOPES[-1]
+            )
+            if write_scope not in set(granted_scope.split()):
+                label = "Google" if provider == "google" else "Outlook"
+                raise PermissionError(f"{label} did not grant read and edit permission")
         token = dict(response)
+        token["scope"] = granted_scope
         token["expires_at"] = self.now().timestamp() + int(response.get("expires_in") or 3600)
         token["access_mode"] = access
         start = (self.now() - timedelta(days=30)).isoformat()

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -106,7 +107,16 @@ class SyncEngine:
             if not app_credential:
                 raise HttpError(401, "Google Desktop credentials are not configured")
             form["client_secret"] = app_credential
-        response = self.http.post_token(TOKEN_ENDPOINTS[provider], form)
+        try:
+            response = self.http.post_token(TOKEN_ENDPOINTS[provider], form)
+        except HttpError as error:
+            try:
+                oauth_error = json.loads(error.message).get("error")
+            except (AttributeError, json.JSONDecodeError):
+                oauth_error = ""
+            if error.status == 400 and oauth_error == "invalid_grant":
+                raise HttpError(401, "Calendar credentials need browser reconnection") from error
+            raise
         merged = dict(token)
         merged.update(response)
         merged["refresh_token"] = str(response.get("refresh_token") or refresh_token)

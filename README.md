@@ -1,8 +1,12 @@
 # Flight Deck Calendar for Omarchy
 
-Flight Deck Calendar puts Google Calendar and Outlook in one read-only Omarchy panel. Accounts connect in the browser, tokens stay in the system keyring, and calendar data stays on the workstation. No hosted backend receives calendar data.
+Flight Deck Calendar puts Google Calendar and Outlook in one Omarchy panel. Accounts connect in the browser, and read-only access remains the default. Tokens stay in the system keyring, and the local cache stays on the workstation. Saved changes go directly to the selected provider. No hosted backend receives calendar data.
 
-See the [product overview](https://calendar.pestorious.com/), read the [privacy policy](https://calendar.pestorious.com/privacy/), or download the [stable release](https://github.com/joryeugene/omarchy-calendar/releases/tag/v1.0.0).
+See the [product overview](https://calendar.pestorious.com/), read the [privacy policy](https://calendar.pestorious.com/privacy/), or download the [stable release](https://github.com/joryeugene/omarchy-calendar/releases/tag/v1.1.0).
+
+![Flight Deck Calendar Week view with a selected event open in the right-side editor](screenshots/flight-deck-calendar-editor.png)
+
+The right-side editor keeps the Week grid visible while a local draft changes. Save sends the completed change directly to Google or Microsoft. Cancel leaves the provider unchanged.
 
 ![Flight Deck Calendar Week view with Google and Outlook events, an all-day lane, overlapping meetings, and current-time context](screenshots/flight-deck-calendar-week.png)
 
@@ -54,11 +58,23 @@ After an override is configured, connect through the same browser flow. See [the
 
 ## Optional event editing
 
-Event editing is opt-in for each account. Existing accounts and new connections remain read-only until the user chooses **Read and edit**. Google then requests `calendar.events.owned`; Outlook requests `Calendars.ReadWrite`.
+Event editing is opt-in for each account. Existing accounts and new connections remain read-only until the user chooses **Enable editing** in **Accounts and Calendars**. Google then requests `calendar.events.owned`; Outlook requests `Calendars.ReadWrite`. A blocked create, edit, duplicate, or quick-move action opens that exact account action and resumes after successful consent.
 
 The Week view can create, edit, duplicate, move, resize, and delete events on calendars that the connected account owns. Only changes confirmed with Save are sent to the provider. Deletion always requires confirmation.
 
-Changing the calendar while editing creates and verifies a copy in the destination calendar. Copying an event to another calendar does not delete the original event. After a verified copy, Flight Deck offers a separate Delete original action.
+New events can repeat daily, on weekdays, weekly, monthly, or on selected weekdays. A series can continue indefinitely, stop after a set number of events, or end on a date. For an existing recurring event, choose **This occurrence** or **Entire series**. **This and following** is not supported.
+
+An **Entire series** copy transfers the supported base schedule. Flight Deck checks the source series for modified or cancelled occurrences before offering Delete original. It offers Delete original only when the scan is complete and finds none; otherwise, it keeps the original series and explains why.
+
+When copying an event, choose whether to keep the existing meeting link or generate a new meeting supported by the destination calendar. Flight Deck verifies the saved event before presenting the result. If the provider has not returned a generated link yet, Flight Deck reports that the meeting link is still pending and leaves the original event unchanged.
+
+Events with attendees are duplicate-only in this release. Flight Deck does not edit, delete, or send invitations for them.
+
+Changing the calendar while editing creates and verifies a copy in the destination calendar. Copying an event to another calendar does not delete the original event. Flight Deck offers Delete original only when the source is eligible for deletion, online, and authorized for event editing. Otherwise, both events remain, and the result explains why.
+
+For a cross-provider copy, the selected event fields are sent directly from the workstation to the destination provider. No event data passes through a Flight Deck server.
+
+Dragging and resizing change only the local draft. The unsaved draft remains available while the provider is offline, but Save stays disabled. If the event changed remotely, Flight Deck refreshes the provider event and preserves the local draft for review. If a create request is retried, Flight Deck reuses the same provider request identifier so the retry does not create a second event.
 
 The same permission upgrade is available from the terminal:
 
@@ -82,9 +98,16 @@ calendarctl enable-editing microsoft
 | `n` | Create an event at the selected day and time |
 | `e` | Edit the selected event |
 | `d` | Duplicate the selected event into a local draft |
+| `Shift+H` / `Shift+L` | Open or move the local draft one day earlier / later |
+| `Shift+J` / `Shift+K` | Open or move a timed local draft 15 minutes later / earlier |
 | `h` / `l` in the editor | Change the selected field value |
 | `j` / `k` in the editor | Move between fields |
+| `Enter` in the recurring editor | Choose This occurrence or Entire series; reveal or confirm Delete |
 | `Ctrl+Enter` in the editor | Save the current draft |
+| `Esc` in the editor | Cancel Delete confirmation, then cancel the draft |
+| `k` on a copy result | Keep both copies and close the result |
+| `e` on a copy result | Enable editing for the source account when required |
+| `x` on a copy result | Reveal, then confirm Delete original |
 | `r` | Refresh providers |
 | `c` | Open Settings at Calendars |
 | `s` | Open Settings at Appearance |
@@ -168,6 +191,7 @@ Example:
 - Optional local developer client IDs: `~/.config/omarchy-calendar/providers.json`, mode `0600`
 - Telemetry, analytics, AI, and hosted backend: none
 - Calendar writes: disabled until the account opts in; only an explicit Save sends a change
+- Cross-provider copies: selected event fields go directly to the destination provider; no Flight Deck server receives them
 
 Disconnect removes that provider's tokens and cached events immediately. `Reset local data` uses two-step confirmation and removes every provider token, cached event, health record, and local provider override while preserving appearance settings. Bundled public registration metadata remains part of the installed plugin. Read [PRIVACY.md](PRIVACY.md) for the complete lifecycle.
 
@@ -207,7 +231,7 @@ Remove an optional user-created `Super+Shift+C` binding separately. Uninstall do
 Run the complete local check:
 
 ```bash
-scripts/check
+just check
 ```
 
 Optionally enable the repository's staged secret scan:
@@ -220,7 +244,7 @@ git config core.hooksPath .githooks
 Before a public artifact or tag, run:
 
 ```bash
-scripts/check --release
+just release
 ```
 
 Flight Deck Calendar is licensed under GPL-3.0-or-later. Contributions should retain SPDX headers, the read-only default, and the local-storage constraints.

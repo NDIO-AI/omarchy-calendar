@@ -6,7 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import date
 from pathlib import Path
 from unittest.mock import patch
@@ -150,6 +150,67 @@ class CalendarCliTests(unittest.TestCase):
         self.assertIn("Read and edit permission is required", error.getvalue())
         self.assertNotIn("Traceback", error.getvalue())
 
+    def test_delete_event_requires_explicit_stdin_confirmation(self):
+        error = io.StringIO()
+        with (
+            patch("omarchy_calendar.cli.MutationService") as service,
+            patch("omarchy_calendar.cli.read_stdin_json", return_value={"uid": "event"}),
+            patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state)}),
+            redirect_stderr(error),
+        ):
+            result = main(["delete-event"])
+
+        self.assertEqual(result, 2)
+        self.assertIn("explicit confirmation", error.getvalue())
+        service.return_value.delete_event.assert_not_called()
+
+        output = io.StringIO()
+        with (
+            patch("omarchy_calendar.cli.MutationService") as service,
+            patch("omarchy_calendar.cli.read_stdin_json", return_value={
+                "uid": "event",
+                "confirmed": True,
+                "scope": "series",
+                "expected_revision": "event-revision",
+                "series_revision": "series-revision",
+                "series_transfer_guard": True,
+            }),
+            patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state)}),
+            redirect_stdout(output),
+        ):
+            service.return_value.delete_event.return_value = {"deleted": True}
+            result = main(["delete-event"])
+
+        self.assertEqual(result, 0)
+        service.return_value.delete_event.assert_called_once_with(
+            "event",
+            scope="series",
+            expected_revision="event-revision",
+            series_revision="series-revision",
+            series_transfer_guard=True,
+        )
+
+        with (
+            patch("omarchy_calendar.cli.MutationService") as service,
+            patch("omarchy_calendar.cli.read_stdin_json", return_value={
+                "uid": "event",
+                "confirmed": True,
+            }),
+            patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state)}),
+            redirect_stdout(io.StringIO()),
+        ):
+            service.return_value.delete_event.return_value = {"deleted": True}
+            result = main(["delete-event"])
+
+        self.assertEqual(result, 0)
+        service.return_value.delete_event.assert_called_once_with(
+            "event",
+            scope="single",
+            expected_revision="",
+            series_revision="",
+            series_transfer_guard=False,
+        )
+
     def test_configure_client_and_setup_status_separate_configuration_from_connection(self):
         configured = self.run_cli(
             "configure-client", "microsoft", "11111111-2222-3333-4444-555555555555"
@@ -260,6 +321,41 @@ class CalendarCliTests(unittest.TestCase):
         self.assertEqual(google["editing_account_ids"], ["account"])
         self.assertEqual(keyring.requested, ("google", "account"))
         self.assertNotIn("private-token", json.dumps(status))
+
+    def test_setup_status_does_not_trust_access_mode_without_exact_write_scope(self):
+        class FakeKeyring:
+            def get_app_credential(self, _provider):
+                return "desktop-credential"
+
+            def get(self, provider, _account_id):
+                return {
+                    "access_token": "private-token",
+                    "access_mode": "edit",
+                    "scope": (
+                        "https://www.googleapis.com/auth/calendar.events.readonly"
+                        if provider == "google" else "Calendars.Read"
+                    ),
+                }
+
+        with CalendarStore(self.state / "omarchy-calendar" / "calendar.db") as store:
+            store.set_health(ProviderHealth.ok(
+                "google", "google-account", "2026-09-02T12:00:00Z"
+            ))
+            store.set_health(ProviderHealth.ok(
+                "microsoft", "outlook-account", "2026-09-02T12:00:00Z"
+            ))
+            status = setup_status(
+                store,
+                ProviderSettings(
+                    google_client_id="local.apps.googleusercontent.com",
+                    microsoft_client_id="11111111-2222-3333-4444-555555555555",
+                ),
+                FakeKeyring(),
+            )
+
+        for provider in status["providers"]:
+            self.assertFalse(provider["editing"], provider["provider"])
+            self.assertEqual(provider["editing_account_ids"], [])
 
     def test_setup_status_never_completes_a_local_google_id_with_bundled_credential(self):
         class MissingLocalCredentialKeyring:

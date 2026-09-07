@@ -16,6 +16,13 @@ function dayKey(value) {
   return date.getFullYear() + "-" + pad2(date.getMonth() + 1) + "-" + pad2(date.getDate())
 }
 
+function dayKeyDate(value) {
+  var parts = String(value || "").split("-")
+  if (parts.length !== 3) return null
+  var date = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]))
+  return isNaN(date.getTime()) ? null : date
+}
+
 function localMidnight(value) {
   var date = value instanceof Date ? new Date(value.getTime()) : new Date(value)
   date.setHours(0, 0, 0, 0)
@@ -61,10 +68,16 @@ function visibleCalendarEvents(events, hiddenCalendarKeys) {
 function eventsForRange(events, start, end) {
   var from = new Date(start).getTime()
   var to = new Date(end).getTime()
+  var fromDay = dayKey(start)
+  var toDay = dayKey(end)
   return (events || []).filter(function(event) {
+    if (event.all_day && event.start_day && event.end_day)
+      return String(event.end_day) > fromDay && String(event.start_day) < toDay
     return new Date(event.end).getTime() > from && new Date(event.start).getTime() < to
   }).sort(function(a, b) {
     if (Boolean(a.all_day) !== Boolean(b.all_day)) return a.all_day ? -1 : 1
+    if (a.all_day && a.start_day && b.start_day)
+      return String(a.start_day).localeCompare(String(b.start_day))
     return new Date(a.start).getTime() - new Date(b.start).getTime()
   })
 }
@@ -93,7 +106,32 @@ function eventIndexByUid(events, eventOrUid) {
 }
 
 function eventDay(event) {
+  if (event && event.all_day && event.start_day) return dayKeyDate(event.start_day)
   return event && event.start ? localMidnight(event.start) : null
+}
+
+function visibleInterval(event, value) {
+  var start = new Date(event.start)
+  var end = new Date(event.end)
+  if (!value) return { start: start, end: end }
+  var dayStart = localMidnight(value)
+  var dayEnd = addDays(dayStart, 1)
+  return {
+    start: new Date(Math.max(start.getTime(), dayStart.getTime())),
+    end: new Date(Math.min(end.getTime(), dayEnd.getTime())),
+  }
+}
+
+function eventAtMinute(events, minute, minimumDuration, value) {
+  return (events || []).some(function(event) {
+    var interval = visibleInterval(event, value)
+    var first = interval.start.getHours() * 60 + interval.start.getMinutes()
+    var last = interval.end.getHours() * 60 + interval.end.getMinutes()
+    if (value && interval.end.getTime() === addDays(localMidnight(value), 1).getTime()) last = 1440
+    else if (last < first) last += 1440
+    last = Math.max(last, first + Math.max(0, Number(minimumDuration || 0)))
+    return Number(minute) >= first && Number(minute) < last
+  })
 }
 
 function moveWithinDay(events, value, uid, amount) {
@@ -162,19 +200,20 @@ function nowSelectionUid(events, value, now) {
   if (ordered.length === 0) return ""
   var current = (now instanceof Date ? now : new Date(now)).getTime()
   var timed = ordered.filter(function(event) { return !event.all_day })
-  if (timed.length === 0) return String(ordered[0].uid || "")
-  var best = timed[0]
-  var bestDistance = Infinity
+  var ongoing = null
+  var upcoming = null
   for (var i = 0; i < timed.length; i++) {
     var start = new Date(timed[i].start).getTime()
     var end = new Date(timed[i].end).getTime()
-    var distance = current < start ? start - current : current >= end ? current - end : 0
-    if (distance < bestDistance || (distance === bestDistance && start >= current)) {
-      best = timed[i]
-      bestDistance = distance
-    }
+    if (start <= current && end > current && (!ongoing || start > new Date(ongoing.start).getTime()))
+      ongoing = timed[i]
+    else if (start > current && !upcoming)
+      upcoming = timed[i]
   }
-  return String(best.uid || "")
+  if (ongoing) return String(ongoing.uid || "")
+  if (upcoming) return String(upcoming.uid || "")
+  var allDay = ordered.find(function(event) { return event.all_day })
+  return allDay ? String(allDay.uid || "") : ""
 }
 
 function revealOffset(currentOffset, viewportSize, itemStart, itemSize, contentSize, padding) {
@@ -188,15 +227,20 @@ function revealOffset(currentOffset, viewportSize, itemStart, itemSize, contentS
   return Math.max(0, Math.min(maximum, next))
 }
 
-function timePosition(event, hourHeight, startHour) {
-  var start = new Date(event.start)
+function timePosition(event, hourHeight, startHour, value) {
+  var start = visibleInterval(event, value).start
   var minutes = start.getHours() * 60 + start.getMinutes() - Number(startHour || 0) * 60
   return Math.max(0, minutes * Number(hourHeight) / 60)
 }
 
-function durationHeight(event, hourHeight) {
-  var minutes = Math.max(1, (new Date(event.end).getTime() - new Date(event.start).getTime()) / 60000)
+function durationHeight(event, hourHeight, value) {
+  var interval = visibleInterval(event, value)
+  var minutes = Math.max(1, (interval.end.getTime() - interval.start.getTime()) / 60000)
   return Math.max(22, minutes * Number(hourHeight) / 60)
+}
+
+function fillHourHeight(minimum, viewportHeight, hours, padding) {
+  return Math.max(Number(minimum), (Number(viewportHeight) - Number(padding || 0) * 2) / Math.max(1, Number(hours)))
 }
 
 function overlapColumns(events) {
@@ -401,6 +445,7 @@ if (typeof module !== "undefined") module.exports = {
   eventByUid: eventByUid,
   eventIndexByUid: eventIndexByUid,
   eventDay: eventDay,
+  eventAtMinute: eventAtMinute,
   moveWithinDay: moveWithinDay,
   closestUidForDay: closestUidForDay,
   initialSelection: initialSelection,
@@ -408,6 +453,7 @@ if (typeof module !== "undefined") module.exports = {
   revealOffset: revealOffset,
   timePosition: timePosition,
   durationHeight: durationHeight,
+  fillHourHeight: fillHourHeight,
   overlapColumns: overlapColumns,
   moveAcrossOverlap: moveAcrossOverlap,
   moveWeekVertical: moveWeekVertical,

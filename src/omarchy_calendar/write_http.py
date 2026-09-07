@@ -19,9 +19,14 @@ class WriteViolation(RuntimeError):
     pass
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, file_pointer, code, message, headers, new_url):
+        return None
+
+
 class CalendarWriteHttp:
     def __init__(self, opener: Any | None = None, *, timeout: int = 20):
-        self.opener = opener or urllib.request.build_opener()
+        self.opener = opener or urllib.request.build_opener(_NoRedirectHandler())
         self.timeout = timeout
 
     def request_json(

@@ -16,6 +16,7 @@ class Calendar:
     writable: bool
     owned: bool
     meeting_providers: tuple[str, ...] = ()
+    sync_enabled: bool = True
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -48,6 +49,12 @@ class Event:
     recurrence: tuple[str, ...] = ()
     event_type: str = "single"
     organizer_owned: bool = False
+    start_day: str = ""
+    end_day: str = ""
+    series_revision: str = ""
+    series_start: str = ""
+    series_end: str = ""
+    has_attendees: bool = False
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)

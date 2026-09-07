@@ -16,27 +16,39 @@ Rectangle {
     property real textScale: 1
     property bool busy: false
     property bool offline: false
-    property bool needsPermission: false
     property string errorText: ""
     property string noticeText: ""
     property int controlIndex: 0
     property int weekdayIndex: 0
     property bool confirmDelete: false
     readonly property var destinations: calendars.filter(function (item) {
-        return item.writable && item.owned;
+        return item.writable && item.owned && item.sync_enabled !== false;
     })
-    readonly property bool recurring: Boolean(eventData && eventData.recurrence_id)
-    readonly property bool unsupportedEvent: root.mode === "update" && root.eventData && !root.eventData.organizer_owned
+    readonly property bool recurring: Boolean(eventData && (eventData.recurrence_id || eventData.event_type === "series" || (eventData.recurrence || []).length))
+    readonly property bool seriesOnly: root.draft.series_only === true
+    readonly property bool hasMeeting: Boolean(eventData && eventData.meeting_url)
+    readonly property bool sourceDestinationAvailable: root.destinations.some(function (item) { return item.key === root.draft.calendar_key; })
+    readonly property bool unsupportedEvent: root.mode === "update" && root.eventData && (!root.eventData.organizer_owned || !root.sourceDestinationAvailable || root.eventData.has_attendees)
+    readonly property string unsupportedReason: root.eventData && root.eventData.has_attendees ? "Events with attendees are duplicate-only in this release. Duplicate it to create your own copy." : !root.sourceDestinationAvailable ? "This event's calendar is not an owned writable destination. Duplicate it to another calendar." : "Only events you organize can be edited. Duplicate this event to create your own copy."
     readonly property bool noDestination: root.destinations.length === 0
     readonly property bool canSubmit: !root.busy && !root.offline && !root.unsupportedEvent && !root.noDestination
+    readonly property bool canPrimaryAction: root.unsupportedEvent ? !root.busy && !root.offline && !root.noDestination : root.canSubmit
+    readonly property bool canDelete: root.mode === "update" && !root.busy && !root.offline && !root.unsupportedEvent && !root.noDestination
     readonly property bool inputFocused: titleInput.activeFocus || dayInput.activeFocus || startInput.activeFocus || endInput.activeFocus || locationInput.activeFocus || notesInput.activeFocus || countInput.activeFocus || untilInput.activeFocus
 
     signal draftUpdated(var draft)
     signal saveRequested
     signal cancelRequested
     signal deleteRequested(string scope)
-    signal enableEditingRequested
+    signal duplicateRequested
     signal copyMeetingRequested
+    signal inputNavigationRequested(int direction)
+
+    Shortcut {
+        sequences: ["Ctrl+Return", "Ctrl+Enter"]
+        enabled: root.visible
+        onActivated: root.submit()
+    }
 
     color: palette.surface || "#171b2b"
     border.color: palette.border || "#3b4261"
@@ -55,6 +67,11 @@ Rectangle {
         for (var existing in current)
             recurrence[existing] = current[existing];
         recurrence[key] = value;
+        if (key === "frequency" && (value === "none" || value === "preserve")) {
+            recurrence.end = "never";
+            recurrence.count = 0;
+            recurrence.until = "";
+        }
         var next = {};
         for (var draftKey in root.draft)
             next[draftKey] = root.draft[draftKey];
@@ -67,27 +84,63 @@ Rectangle {
         var next = {};
         for (var existing in root.draft)
             next[existing] = root.draft[existing];
-        next.scope = value;
-        if (value === "single" && root.mode === "update" && root.recurring)
-            next.recurrence = { frequency: "preserve", weekdays: [], end: "never" };
+        next.scope = root.seriesOnly ? "series" : value;
+        if (root.recurring)
+            next.recurrence = value === "series"
+                ? { frequency: "preserve", weekdays: [], end: "never" }
+                : { frequency: root.mode === "update" ? "preserve" : "none", weekdays: [], end: "never" };
         root.draftUpdated(next);
     }
+    function resetInteraction() {
+        root.controlIndex = 0;
+        root.weekdayIndex = 0;
+        root.confirmDelete = false;
+        editorScroll.contentY = 0;
+    }
+    function scrollToBottom() {
+        Qt.callLater(function () {
+            editorScroll.contentY = Math.max(0, editorScroll.contentHeight - editorScroll.height);
+        });
+    }
+    function statusCalloutVisible() {
+        return root.offline || root.unsupportedEvent || root.noDestination || root.errorText !== "";
+    }
+    function statusNeedsReveal() {
+        return root.offline || root.unsupportedEvent || root.noDestination || root.errorText !== "";
+    }
+    function revealStatusCallout() {
+        if (root.statusNeedsReveal())
+            root.scrollToBottom();
+    }
+    function revealDeleteConfirmation() {
+        root.confirmDelete = true;
+        root.scrollToBottom();
+    }
+
+    onOfflineChanged: revealStatusCallout()
+    onUnsupportedEventChanged: revealStatusCallout()
+    onNoDestinationChanged: revealStatusCallout()
+    onErrorTextChanged: revealStatusCallout()
     function calendarIndex() {
         for (var i = 0; i < destinations.length; i++)
             if (destinations[i].key === root.draft.calendar_key)
                 return i;
         return 0;
     }
+    function calendarLabel() {
+        if (!root.destinations.length)
+            return "No owned writable calendar";
+        var calendar = root.destinations[root.calendarIndex()];
+        var provider = calendar.provider === "google" ? "Google" : "Outlook";
+        return String(calendar.name || "Calendar") + "  ·  " + String(calendar.account_label || provider) + "  ·  " + provider;
+    }
     function cycleCalendar(amount) {
         if (!destinations.length)
             return;
         var index = (calendarIndex() + Number(amount) + destinations.length) % destinations.length;
-        var next = {};
-        for (var existing in root.draft)
-            next[existing] = root.draft[existing];
-        next.calendar_key = destinations[index].key;
-        if (root.eventData && next.calendar_key !== root.eventData.calendar_key && next.recurrence.frequency === "preserve")
-            next.recurrence = { frequency: "none", weekdays: [], end: "never" };
+        var next = EventEditorModel.withCalendar(
+            root.draft, destinations[index].key, root.eventData, root.calendars
+        );
         root.draftUpdated(next);
     }
     function recurrenceIndex() {
@@ -112,7 +165,10 @@ Rectangle {
     function cycleEnding(amount) {
         var values = ["never", "count", "date"];
         var current = Math.max(0, values.indexOf(String((draft.recurrence || {}).end || "never")));
-        root.updateRecurrence("end", values[(current + Number(amount) + values.length) % values.length]);
+        root.draftUpdated(EventEditorModel.withRecurrenceEnding(
+            root.draft,
+            values[(current + Number(amount) + values.length) % values.length]
+        ));
     }
     function meetingOptions() {
         return EventEditorModel.meetingOptions(root.draft, root.eventData, root.calendars);
@@ -130,7 +186,7 @@ Rectangle {
         return "No online meeting";
     }
     function moveField(amount) {
-        var controls = EventEditorModel.visibleControls(root.draft, root.mode, root.recurring);
+        var controls = EventEditorModel.visibleControls(root.draft, root.mode, root.recurring, root.hasMeeting, root.canDelete);
         var current = Math.max(0, controls.indexOf(controlIndex));
         var position = Math.max(0, Math.min(controls.length - 1, current + Number(amount)));
         controlIndex = controls[position];
@@ -155,18 +211,22 @@ Rectangle {
             cycleEnding(amount);
         else if (controlIndex === 11)
             cycleMeeting(amount);
-        else if (controlIndex === 12)
+        else if (controlIndex === 13)
             root.setScope(root.draft.scope === "series" ? "single" : "series");
-        else if (controlIndex === 13 && root.confirmDelete && root.recurring)
+        else if (controlIndex === 14 && root.confirmDelete && root.recurring)
             root.setScope(root.draft.scope === "series" ? "single" : "series");
     }
     function toggleAllDay() {
         root.draftUpdated(EventEditorModel.toggleAllDay(root.draft));
     }
     function submit() {
-        if (!root.canSubmit)
+        if (!root.canPrimaryAction)
             return;
-        root.needsPermission ? root.enableEditingRequested() : root.saveRequested();
+        if (root.unsupportedEvent) {
+            root.duplicateRequested();
+            return;
+        }
+        root.saveRequested();
     }
     function activateCurrent() {
         if (controlIndex === 0)
@@ -194,34 +254,67 @@ Rectangle {
         else if (controlIndex === 11)
             cycleMeeting(1);
         else if (controlIndex === 12)
+            root.copyMeetingRequested();
+        else if (controlIndex === 13)
             root.setScope(root.draft.scope === "series" ? "single" : "series");
-        else if (controlIndex === 13) {
+        else if (controlIndex === 14) {
             if (root.confirmDelete)
                 root.deleteRequested(root.recurring ? root.draft.scope : "single");
             else
-                root.confirmDelete = true;
+                root.revealDeleteConfirmation();
         }
-        else if (controlIndex === 14)
-            cancelRequested();
         else if (controlIndex === 15)
+            cancelRequested();
+        else if (controlIndex === 16)
             submit();
     }
     function handleInputKey(event) {
-        if ((event.modifiers & Qt.ControlModifier) && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter)) {
-            root.submit();
+        if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
+            root.inputNavigationRequested(event.key === Qt.Key_Backtab || (event.modifiers & Qt.ShiftModifier) ? -1 : 1);
             event.accepted = true;
         } else if (event.key === Qt.Key_Escape) {
-            root.cancelRequested();
+            root.confirmDelete ? root.confirmDelete = false : root.cancelRequested();
             event.accepted = true;
         }
     }
 
     component FieldLabel: Text {
         textFormat: Text.PlainText
+        property bool firstSection: false
+        topPadding: firstSection ? 0 : Style.space(8)
         color: root.palette.foreground
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption * root.textScale
         font.bold: true
+    }
+
+    component TimeStepButton: Rectangle {
+        property string buttonText: ""
+        property int targetControl: 0
+        signal activated
+
+        width: Style.space(28)
+        height: Style.space(38)
+        radius: Style.space(5)
+        color: "transparent"
+        border.color: root.palette.border
+        opacity: root.draft.all_day ? 0.45 : 1
+        Text {
+            textFormat: Text.PlainText
+            anchors.centerIn: parent
+            text: parent.buttonText
+            color: root.palette.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body * root.textScale
+        }
+        MouseArea {
+            anchors.fill: parent
+            enabled: !root.draft.all_day
+            onClicked: {
+                root.controlIndex = parent.targetControl;
+                parent.activated();
+            }
+        }
     }
 
     Text {
@@ -230,6 +323,7 @@ Rectangle {
         anchors.left: parent.left
         anchors.top: parent.top
         anchors.margins: Style.space(18)
+        anchors.topMargin: Style.space(14)
         text: root.mode === "copy" ? "COPY EVENT" : root.mode === "update" ? "EDIT EVENT" : "NEW EVENT"
         color: root.mode === "copy" ? root.palette.positive : root.palette.accent
         font.family: root.fontFamily
@@ -243,6 +337,7 @@ Rectangle {
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.margins: Style.space(18)
+        anchors.topMargin: Style.space(14)
         text: "Close  Esc"
         color: root.palette.muted
         font.family: root.fontFamily
@@ -255,28 +350,33 @@ Rectangle {
 
     Flickable {
         id: editorScroll
+        objectName: "editorScroll"
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: editorTitle.bottom
         anchors.bottom: footer.top
         anchors.margins: Style.space(16)
         anchors.topMargin: Style.space(14)
-        contentHeight: form.implicitHeight + Style.space(20)
+        anchors.bottomMargin: Style.space(14)
+        contentHeight: form.implicitHeight + Style.space(14)
         clip: true
         boundsBehavior: Flickable.StopAtBounds
+        onContentHeightChanged: if (root.confirmDelete || root.statusNeedsReveal())
+            root.scrollToBottom()
 
         Column {
             id: form
             width: editorScroll.width
-            spacing: Style.space(12)
+            spacing: Style.space(6)
 
             FieldLabel {
+                firstSection: true
                 text: "Title"
                 color: root.controlIndex === 0 ? root.palette.accent : root.palette.foreground
             }
             Rectangle {
                 width: parent.width
-                height: Style.space(42)
+                height: Style.space(38)
                 radius: Style.space(6)
                 color: "transparent"
                 border.color: root.controlIndex === 0 ? root.palette.accent : root.palette.border
@@ -284,13 +384,16 @@ Rectangle {
                     id: titleInput
                     anchors.fill: parent
                     anchors.margins: Style.space(10)
+                    clip: true
                     text: String(root.draft.title || "")
+                    autoScroll: activeFocus
                     color: root.palette.foreground
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall * root.textScale
                     selectByMouse: true
                     maximumLength: 500
                     onTextEdited: root.update("title", text)
+                    onActiveFocusChanged: if (activeFocus) root.controlIndex = 0
                     Keys.onPressed: function (event) {
                         root.handleInputKey(event);
                     }
@@ -312,7 +415,7 @@ Rectangle {
             }
             Rectangle {
                 width: parent.width
-                height: Style.space(42)
+                height: Style.space(38)
                 radius: Style.space(6)
                 color: "transparent"
                 border.color: root.controlIndex === 1 ? root.palette.accent : root.palette.border
@@ -321,7 +424,7 @@ Rectangle {
                     anchors.fill: parent
                     anchors.margins: Style.space(10)
                     verticalAlignment: Text.AlignVCenter
-                    text: root.destinations.length ? String(root.destinations[root.calendarIndex()].name || "Calendar") + "  ·  " + (root.destinations[root.calendarIndex()].provider === "google" ? "Google" : "Outlook") : "No owned writable calendar"
+                    text: root.calendarLabel()
                     color: root.palette.foreground
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall * root.textScale
@@ -352,7 +455,7 @@ Rectangle {
             }
             Row {
                 width: parent.width
-                height: Style.space(42)
+                height: Style.space(38)
                 spacing: Style.space(6)
                 Rectangle {
                     width: Style.space(44)
@@ -386,13 +489,15 @@ Rectangle {
                         id: dayInput
                         anchors.fill: parent
                         anchors.margins: Style.space(10)
+                        clip: true
                         text: String(root.draft.day || "")
                         horizontalAlignment: Text.AlignHCenter
                         color: root.palette.foreground
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.bodySmall * root.textScale
                         inputMask: "9999-99-99"
-                        onEditingFinished: root.update("day", text)
+                        onTextEdited: root.draftUpdated(EventEditorModel.withDay(root.draft, text))
+                        onActiveFocusChanged: if (activeFocus) root.controlIndex = 2
                         Keys.onPressed: function (event) {
                             root.handleInputKey(event);
                         }
@@ -427,70 +532,114 @@ Rectangle {
                 spacing: Style.space(10)
                 Column {
                     width: (parent.width - parent.spacing) / 2
-                    spacing: Style.space(5)
+                    spacing: Style.space(6)
                     FieldLabel {
                         text: "Start"
                         color: root.controlIndex === 3 ? root.palette.accent : root.palette.foreground
                     }
-                    Rectangle {
+                    Row {
                         width: parent.width
-                        height: Style.space(42)
-                        radius: Style.space(6)
-                        color: "transparent"
-                        border.color: root.controlIndex === 3 ? root.palette.accent : root.palette.border
-                        opacity: root.draft.all_day ? 0.45 : 1
-                        TextInput {
-                            id: startInput
-                            enabled: !root.draft.all_day
-                            anchors.fill: parent
-                            anchors.margins: Style.space(10)
-                            text: String(root.draft.start || "")
-                            horizontalAlignment: Text.AlignHCenter
-                            color: root.palette.foreground
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.bodySmall * root.textScale
-                            inputMask: "99:99"
-                            onEditingFinished: root.update("start", text)
-                            Keys.onPressed: function (event) {
-                                root.handleInputKey(event);
+                        height: Style.space(38)
+                        spacing: Style.space(4)
+                        Rectangle {
+                            width: parent.width - Style.space(64)
+                            height: parent.height
+                            radius: Style.space(6)
+                            color: "transparent"
+                            border.color: root.controlIndex === 3 ? root.palette.accent : root.palette.border
+                            opacity: root.draft.all_day ? 0.45 : 1
+                            TextInput {
+                                id: startInput
+                                enabled: !root.draft.all_day
+                                visible: !root.draft.all_day
+                                anchors.fill: parent
+                                anchors.margins: Style.space(8)
+                                clip: true
+                                text: String(root.draft.start || "")
+                                horizontalAlignment: Text.AlignHCenter
+                                color: root.palette.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall * root.textScale
+                                inputMask: "99:99"
+                                onTextEdited: root.draftUpdated(EventEditorModel.withTime(root.draft, "start", text))
+                                onActiveFocusChanged: if (activeFocus) root.controlIndex = 3
+                                Keys.onPressed: function (event) {
+                                    root.handleInputKey(event);
+                                }
                             }
+                        }
+                        TimeStepButton {
+                            objectName: "startMinus"
+                            buttonText: "−"
+                            targetControl: 3
+                            onActivated: root.draftUpdated(EventEditorModel.shift(root.draft, 0, -15, 0))
+                        }
+                        TimeStepButton {
+                            objectName: "startPlus"
+                            buttonText: "+"
+                            targetControl: 3
+                            onActivated: root.draftUpdated(EventEditorModel.shift(root.draft, 0, 15, 0))
                         }
                     }
                 }
                 Column {
                     width: (parent.width - parent.spacing) / 2
-                    spacing: Style.space(5)
+                    spacing: Style.space(6)
                     FieldLabel {
                         text: "End"
                         color: root.controlIndex === 4 ? root.palette.accent : root.palette.foreground
                     }
-                    Rectangle {
+                    Row {
                         width: parent.width
-                        height: Style.space(42)
-                        radius: Style.space(6)
-                        color: "transparent"
-                        border.color: root.controlIndex === 4 ? root.palette.accent : root.palette.border
-                        opacity: root.draft.all_day ? 0.45 : 1
-                        TextInput {
-                            id: endInput
-                            enabled: !root.draft.all_day
-                            anchors.fill: parent
-                            anchors.margins: Style.space(10)
-                            text: String(root.draft.end || "")
-                            horizontalAlignment: Text.AlignHCenter
-                            color: root.palette.foreground
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.bodySmall * root.textScale
-                            inputMask: "99:99"
-                            onEditingFinished: root.update("end", text)
-                            Keys.onPressed: function (event) {
-                                root.handleInputKey(event);
+                        height: Style.space(38)
+                        spacing: Style.space(4)
+                        Rectangle {
+                            width: parent.width - Style.space(64)
+                            height: parent.height
+                            radius: Style.space(6)
+                            color: "transparent"
+                            border.color: root.controlIndex === 4 ? root.palette.accent : root.palette.border
+                            opacity: root.draft.all_day ? 0.45 : 1
+                            TextInput {
+                                id: endInput
+                                enabled: !root.draft.all_day
+                                visible: !root.draft.all_day
+                                anchors.fill: parent
+                                anchors.margins: Style.space(8)
+                                clip: true
+                                text: String(root.draft.end || "")
+                                horizontalAlignment: Text.AlignHCenter
+                                color: root.palette.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.bodySmall * root.textScale
+                                inputMask: "99:99"
+                                onTextEdited: root.draftUpdated(EventEditorModel.withTime(root.draft, "end", text))
+                                onActiveFocusChanged: if (activeFocus) root.controlIndex = 4
+                                Keys.onPressed: function (event) {
+                                    root.handleInputKey(event);
+                                }
                             }
+                        }
+                        TimeStepButton {
+                            objectName: "endMinus"
+                            buttonText: "−"
+                            targetControl: 4
+                            onActivated: root.draftUpdated(EventEditorModel.shift(root.draft, 0, 0, -15))
+                        }
+                        TimeStepButton {
+                            objectName: "endPlus"
+                            buttonText: "+"
+                            targetControl: 4
+                            onActivated: root.draftUpdated(EventEditorModel.shift(root.draft, 0, 0, 15))
                         }
                     }
                 }
             }
 
+            Item {
+                width: 1
+                height: Style.space(2)
+            }
             Rectangle {
                 width: parent.width
                 height: Style.space(38)
@@ -539,7 +688,7 @@ Rectangle {
             }
             Rectangle {
                 width: parent.width
-                height: Style.space(42)
+                height: Style.space(38)
                 radius: Style.space(6)
                 color: "transparent"
                 border.color: root.controlIndex === 6 ? root.palette.accent : root.palette.border
@@ -547,12 +696,15 @@ Rectangle {
                     id: locationInput
                     anchors.fill: parent
                     anchors.margins: Style.space(10)
+                    clip: true
                     text: String(root.draft.location || "")
+                    autoScroll: activeFocus
                     color: root.palette.foreground
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall * root.textScale
                     maximumLength: 500
                     onTextEdited: root.update("location", text)
+                    onActiveFocusChanged: if (activeFocus) root.controlIndex = 6
                     Keys.onPressed: function (event) {
                         root.handleInputKey(event);
                     }
@@ -565,24 +717,34 @@ Rectangle {
             }
             Rectangle {
                 width: parent.width
-                height: Style.space(92)
+                height: Style.space(80)
                 radius: Style.space(6)
                 color: "transparent"
                 border.color: root.controlIndex === 7 ? root.palette.accent : root.palette.border
-                TextEdit {
-                    id: notesInput
+                Flickable {
+                    id: notesScroll
                     anchors.fill: parent
                     anchors.margins: Style.space(10)
-                    text: String(root.draft.notes || "")
-                    color: root.palette.foreground
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall * root.textScale
-                    wrapMode: TextEdit.Wrap
-                    selectByMouse: true
-                    onTextChanged: if (activeFocus)
-                        root.update("notes", text)
-                    Keys.onPressed: function (event) {
-                        root.handleInputKey(event);
+                    clip: true
+                    contentWidth: width
+                    contentHeight: Math.max(height, notesInput.contentHeight)
+                    boundsBehavior: Flickable.StopAtBounds
+                    TextEdit {
+                        id: notesInput
+                        width: notesScroll.width
+                        height: Math.max(notesScroll.height, contentHeight)
+                        text: String(root.draft.notes || "")
+                        color: root.palette.foreground
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall * root.textScale
+                        wrapMode: TextEdit.Wrap
+                        selectByMouse: true
+                        onTextChanged: if (activeFocus)
+                            root.update("notes", text)
+                        onActiveFocusChanged: if (activeFocus) root.controlIndex = 7
+                        Keys.onPressed: function (event) {
+                            root.handleInputKey(event);
+                        }
                     }
                 }
             }
@@ -593,7 +755,7 @@ Rectangle {
             }
             Rectangle {
                 width: parent.width
-                height: Style.space(42)
+                height: Style.space(38)
                 radius: Style.space(6)
                 color: "transparent"
                 border.color: root.controlIndex === 8 ? root.palette.accent : root.palette.border
@@ -655,7 +817,7 @@ Rectangle {
                 property string frequency: String((root.draft.recurrence || {}).frequency || "none")
                 visible: frequency !== "none" && frequency !== "preserve"
                 width: parent.width
-                height: visible ? Style.space(42) : 0
+                height: visible ? Style.space(38) : 0
                 spacing: Style.space(8)
                 Rectangle {
                     width: parent.width * 0.46
@@ -690,6 +852,7 @@ Rectangle {
                         id: countInput
                         anchors.fill: parent
                         anchors.margins: Style.space(10)
+                        clip: true
                         text: String((root.draft.recurrence || {}).count || 1)
                         color: root.palette.foreground
                         font.family: root.fontFamily
@@ -698,7 +861,8 @@ Rectangle {
                             bottom: 1
                             top: 999
                         }
-                        onEditingFinished: root.updateRecurrence("count", Number(text))
+                        onTextEdited: root.updateRecurrence("count", Number(text))
+                        onActiveFocusChanged: if (activeFocus) root.controlIndex = 10
                         Keys.onPressed: function (event) {
                             root.handleInputKey(event);
                         }
@@ -715,12 +879,14 @@ Rectangle {
                         id: untilInput
                         anchors.fill: parent
                         anchors.margins: Style.space(10)
+                        clip: true
                         text: String((root.draft.recurrence || {}).until || root.draft.day || "")
                         color: root.palette.foreground
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.caption * root.textScale
                         inputMask: "9999-99-99"
-                        onEditingFinished: root.updateRecurrence("until", text)
+                        onTextEdited: root.updateRecurrence("until", text)
+                        onActiveFocusChanged: if (activeFocus) root.controlIndex = 10
                         Keys.onPressed: function (event) {
                             root.handleInputKey(event);
                         }
@@ -734,7 +900,7 @@ Rectangle {
             }
             Rectangle {
                 width: parent.width
-                height: Style.space(42)
+                height: Style.space(38)
                 radius: Style.space(6)
                 color: "transparent"
                 border.color: root.controlIndex === 11 ? root.palette.accent : root.palette.border
@@ -789,13 +955,18 @@ Rectangle {
                 horizontalAlignment: Text.AlignHCenter
             }
 
+            Item {
+                visible: root.recurring || root.canDelete
+                width: 1
+                height: visible ? Style.space(2) : 0
+            }
             Rectangle {
-                visible: root.recurring
+                visible: root.recurring && !root.seriesOnly
                 width: parent.width
-                height: visible ? Style.space(42) : 0
+                height: visible ? Style.space(38) : 0
                 radius: Style.space(6)
                 color: "transparent"
-                border.color: root.palette.border
+                border.color: root.controlIndex === 13 ? root.palette.accent : root.palette.border
                 Text {
                     textFormat: Text.PlainText
                     anchors.centerIn: parent
@@ -811,12 +982,12 @@ Rectangle {
             }
 
             Rectangle {
-                visible: root.mode === "update"
+                visible: root.canDelete
                 width: parent.width
                 height: visible ? Style.space(38) : 0
                 radius: Style.space(6)
                 color: "transparent"
-                border.color: root.controlIndex === 13 ? root.palette.foreground : root.palette.urgent
+                border.color: root.controlIndex === 14 ? root.palette.foreground : root.palette.urgent
                 Text {
                     textFormat: Text.PlainText
                     anchors.centerIn: parent
@@ -829,25 +1000,25 @@ Rectangle {
                 MouseArea {
                     anchors.fill: parent
                     onClicked: {
-                        root.controlIndex = 13;
-                        root.confirmDelete = true;
+                        root.controlIndex = 14;
+                        root.revealDeleteConfirmation();
                     }
                 }
             }
             Row {
-                visible: root.confirmDelete
+                visible: root.confirmDelete && root.canDelete
                 width: parent.width
-                height: visible ? Style.space(40) : 0
+                height: visible ? Style.space(38) : 0
                 spacing: Style.space(6)
                 Rectangle {
-                    width: (parent.width - parent.spacing) / 2
+                    width: root.recurring && !root.seriesOnly ? (parent.width - parent.spacing) / 2 : parent.width
                     height: parent.height
                     radius: Style.space(6)
                     color: root.palette.urgent
                     Text {
                         textFormat: Text.PlainText
                         anchors.centerIn: parent
-                        text: root.recurring ? "Delete this occurrence" : "Confirm delete"
+                        text: root.recurring && !root.seriesOnly ? "This occurrence" : root.seriesOnly ? "Delete entire series" : "Confirm delete"
                         color: root.palette.background
                         font.family: root.fontFamily
                         font.pixelSize: Math.max(9, Style.font.caption * root.textScale)
@@ -855,11 +1026,11 @@ Rectangle {
                     }
                     MouseArea {
                         anchors.fill: parent
-                        onClicked: root.deleteRequested("single")
+                        onClicked: root.deleteRequested(root.seriesOnly ? "series" : "single")
                     }
                 }
                 Rectangle {
-                    visible: root.recurring
+                    visible: root.recurring && !root.seriesOnly
                     width: visible ? (parent.width - parent.spacing) / 2 : 0
                     height: parent.height
                     radius: Style.space(6)
@@ -868,7 +1039,7 @@ Rectangle {
                     Text {
                         textFormat: Text.PlainText
                         anchors.centerIn: parent
-                        text: "Delete entire series"
+                        text: "Entire series"
                         color: root.palette.urgent
                         font.family: root.fontFamily
                         font.pixelSize: Math.max(9, Style.font.caption * root.textScale)
@@ -881,8 +1052,13 @@ Rectangle {
                 }
             }
 
+            Item {
+                visible: root.statusCalloutVisible()
+                width: 1
+                height: visible ? Style.space(2) : 0
+            }
             Rectangle {
-                visible: root.needsPermission || root.offline || root.unsupportedEvent || root.noDestination || root.errorText !== ""
+                visible: root.offline || root.unsupportedEvent || root.noDestination || root.errorText !== ""
                 width: parent.width
                 height: visible ? permissionText.implicitHeight + Style.space(26) : 0
                 radius: Style.space(6)
@@ -891,18 +1067,37 @@ Rectangle {
                 Text {
                     id: permissionText
                     textFormat: Text.PlainText
-                    anchors.fill: parent
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
                     anchors.margins: Style.space(12)
-                    text: root.offline ? "Editing is unavailable offline. Your draft is preserved." : root.errorText !== "" ? root.errorText : root.unsupportedEvent ? "Only events you organize can be edited. Duplicate this event to create your own copy." : root.noDestination ? "No owned writable calendar is available." : "This account is still read-only. Enable Read and edit permission to save."
+                    text: root.offline ? "Editing is unavailable offline. Your draft is preserved." : root.errorText !== "" ? root.errorText : root.unsupportedEvent ? root.unsupportedReason : "No owned writable calendar is available."
                     color: root.offline || root.errorText !== "" ? root.palette.urgent : root.palette.foreground
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption * root.textScale
                     wrapMode: Text.Wrap
                 }
-                MouseArea {
+            }
+            Item {
+                width: 1
+                height: Style.space(2)
+            }
+            Rectangle {
+                objectName: "editorKeyboardHints"
+                width: parent.width
+                height: Style.space(82)
+                radius: Style.space(6)
+                color: "transparent"
+                border.color: root.palette.border
+                Text {
+                    textFormat: Text.PlainText
                     anchors.fill: parent
-                    enabled: root.needsPermission && !root.offline
-                    onClicked: root.enableEditingRequested()
+                    anchors.margins: Style.space(10)
+                    text: "h / l  Change value\nj / k  Change field\nCtrl+Enter  Save\nEsc  Cancel"
+                    color: root.palette.muted
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption * root.textScale
+                    lineHeight: 1.25
                 }
             }
         }
@@ -912,7 +1107,8 @@ Rectangle {
         objectName: "editorScrollAffordance"
         visible: editorScroll.contentHeight > editorScroll.height
         anchors.top: editorScroll.top
-        anchors.right: editorScroll.right
+        anchors.right: parent.right
+        anchors.rightMargin: Style.space(6)
         anchors.bottom: editorScroll.bottom
         width: Style.space(3)
         radius: width / 2
@@ -934,14 +1130,15 @@ Rectangle {
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         anchors.margins: Style.space(16)
-        height: Style.space(44)
+        anchors.bottomMargin: Style.space(14)
+        height: Style.space(38)
         spacing: Style.space(8)
         Rectangle {
             width: (parent.width - parent.spacing) * 0.4
             height: parent.height
             radius: Style.space(6)
             color: "transparent"
-            border.color: root.controlIndex === 14 ? root.palette.accent : root.palette.border
+            border.color: root.controlIndex === 15 ? root.palette.accent : root.palette.border
             Text {
                 textFormat: Text.PlainText
                 anchors.centerIn: parent
@@ -960,20 +1157,20 @@ Rectangle {
             width: (parent.width - parent.spacing) * 0.6
             height: parent.height
             radius: Style.space(6)
-            border.color: root.controlIndex === 15 ? root.palette.foreground : root.palette.accent
-            color: root.canSubmit ? root.palette.accent : root.palette.border
+            border.color: root.controlIndex === 16 ? root.palette.foreground : root.palette.accent
+            color: root.canPrimaryAction ? root.palette.accent : root.palette.border
             Text {
                 textFormat: Text.PlainText
                 anchors.centerIn: parent
-                text: root.busy ? "Saving" : "Save  Ctrl+Enter"
-                color: root.canSubmit ? root.palette.background : root.palette.muted
+                text: root.busy ? "Saving" : root.unsupportedEvent ? "Duplicate" : "Save  Ctrl+Enter"
+                color: root.canPrimaryAction ? root.palette.background : root.palette.muted
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption * root.textScale
                 font.bold: true
             }
             MouseArea {
                 anchors.fill: parent
-                enabled: root.canSubmit
+                enabled: root.canPrimaryAction
                 onClicked: root.submit()
             }
         }

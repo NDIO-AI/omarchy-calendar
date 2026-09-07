@@ -18,6 +18,7 @@ Item {
     property int motionDuration: 140
     property string providerStatus: ""
     property string actionError: ""
+    property string editAction: "edit"
     signal eventSelected(string uid, date day)
     signal meetingRequested
     signal sourceRequested
@@ -182,10 +183,14 @@ Item {
                                 anchors.right: parent.right
                                 anchors.rightMargin: Style.space(12)
                                 anchors.verticalCenter: parent.verticalCenter
-                                text: modelData.meeting_url ? "m  Meeting" : ""
+                                width: Style.space(62)
+                                text: modelData.meeting_url ? "m  Join" : ""
                                 color: root.palette.positive
                                 font.family: root.fontFamily
                                 font.pixelSize: Style.font.caption * root.textScale
+                                horizontalAlignment: Text.AlignRight
+                                elide: Text.ElideRight
+                                clip: true
                             }
 
                             MouseArea {
@@ -230,6 +235,7 @@ Item {
             textScale: root.textScale
             providerStatus: root.providerStatus
             actionError: root.actionError
+            editAction: root.editAction
             motionDuration: root.motionDuration
             onMeetingRequested: root.meetingRequested()
             onSourceRequested: root.sourceRequested()

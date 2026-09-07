@@ -37,6 +37,12 @@ EVENT_COLUMNS = (
     "recurrence",
     "event_type",
     "organizer_owned",
+    "start_day",
+    "end_day",
+    "series_revision",
+    "series_start",
+    "series_end",
+    "has_attendees",
 )
 
 CALENDAR_COLUMNS = (
@@ -49,6 +55,7 @@ CALENDAR_COLUMNS = (
     "timezone",
     "writable",
     "owned",
+    "sync_enabled",
     "meeting_providers",
 )
 
@@ -89,7 +96,13 @@ class CalendarStore:
               recurrence_id TEXT NOT NULL DEFAULT '',
               recurrence TEXT NOT NULL DEFAULT '[]',
               event_type TEXT NOT NULL DEFAULT 'single',
-              organizer_owned INTEGER NOT NULL DEFAULT 0 CHECK (organizer_owned IN (0, 1))
+              organizer_owned INTEGER NOT NULL DEFAULT 0 CHECK (organizer_owned IN (0, 1)),
+              start_day TEXT NOT NULL DEFAULT '',
+              end_day TEXT NOT NULL DEFAULT '',
+              series_revision TEXT NOT NULL DEFAULT '',
+              series_start TEXT NOT NULL DEFAULT '',
+              series_end TEXT NOT NULL DEFAULT '',
+              has_attendees INTEGER NOT NULL DEFAULT 0 CHECK (has_attendees IN (0, 1))
             );
             CREATE INDEX IF NOT EXISTS events_window
               ON events (start, end);
@@ -117,19 +130,21 @@ class CalendarStore:
               timezone TEXT NOT NULL,
               writable INTEGER NOT NULL CHECK (writable IN (0, 1)),
               owned INTEGER NOT NULL CHECK (owned IN (0, 1)),
+              sync_enabled INTEGER NOT NULL DEFAULT 1 CHECK (sync_enabled IN (0, 1)),
               meeting_providers TEXT NOT NULL,
               PRIMARY KEY (provider, account_id, calendar_id)
             );
             """
         )
         self._migrate_events()
+        self._migrate_calendars()
         self.connection.execute(
             """
             INSERT OR IGNORE INTO calendars
               (provider, account_id, account_label, calendar_id, name, color,
-               timezone, writable, owned, meeting_providers)
+               timezone, writable, owned, sync_enabled, meeting_providers)
             SELECT provider, account_id, account_label, calendar_id,
-                   calendar_name, calendar_color, '', 0, 0, '[]'
+                   calendar_name, calendar_color, '', 0, 0, 1, '[]'
               FROM events
              GROUP BY provider, account_id, calendar_id
             """
@@ -149,10 +164,26 @@ class CalendarStore:
             "recurrence": "TEXT NOT NULL DEFAULT '[]'",
             "event_type": "TEXT NOT NULL DEFAULT 'single'",
             "organizer_owned": "INTEGER NOT NULL DEFAULT 0 CHECK (organizer_owned IN (0, 1))",
+            "start_day": "TEXT NOT NULL DEFAULT ''",
+            "end_day": "TEXT NOT NULL DEFAULT ''",
+            "series_revision": "TEXT NOT NULL DEFAULT ''",
+            "series_start": "TEXT NOT NULL DEFAULT ''",
+            "series_end": "TEXT NOT NULL DEFAULT ''",
+            "has_attendees": "INTEGER NOT NULL DEFAULT 1 CHECK (has_attendees IN (0, 1))",
         }
         for name, declaration in additions.items():
             if name not in existing:
                 self.connection.execute(f"ALTER TABLE events ADD COLUMN {name} {declaration}")
+
+    def _migrate_calendars(self) -> None:
+        existing = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(calendars)").fetchall()
+        }
+        if "sync_enabled" not in existing:
+            self.connection.execute(
+                "ALTER TABLE calendars ADD COLUMN sync_enabled INTEGER NOT NULL DEFAULT 1 CHECK (sync_enabled IN (0, 1))"
+            )
 
     def close(self) -> None:
         self.connection.close()
@@ -395,6 +426,7 @@ class CalendarStore:
                     writable=bool(row["writable"]),
                     owned=bool(row["owned"]),
                     meeting_providers=tuple(self._json_list(row["meeting_providers"])),
+                    sync_enabled=bool(row["sync_enabled"]),
                 )
         return None
 
@@ -448,6 +480,7 @@ class CalendarStore:
         data = event.to_dict()
         data["all_day"] = int(event.all_day)
         data["organizer_owned"] = int(event.organizer_owned)
+        data["has_attendees"] = int(event.has_attendees)
         data["recurrence"] = json.dumps(event.recurrence, separators=(",", ":"))
         return tuple(data[column] for column in EVENT_COLUMNS)
 
@@ -456,6 +489,7 @@ class CalendarStore:
         data = calendar.to_dict()
         data["writable"] = int(calendar.writable)
         data["owned"] = int(calendar.owned)
+        data["sync_enabled"] = int(calendar.sync_enabled)
         data["meeting_providers"] = json.dumps(calendar.meeting_providers, separators=(",", ":"))
         return tuple(data[column] for column in CALENDAR_COLUMNS)
 
@@ -476,7 +510,7 @@ class CalendarStore:
     @staticmethod
     def _public_event(row: sqlite3.Row) -> dict[str, object]:
         result = {
-            column: bool(row[column]) if column in ("all_day", "organizer_owned") else row[column]
+            column: bool(row[column]) if column in ("all_day", "organizer_owned", "has_attendees") else row[column]
             for column in EVENT_COLUMNS
         }
         result["recurrence"] = CalendarStore._json_list(result["recurrence"])
@@ -496,6 +530,7 @@ class CalendarStore:
             "timezone": row["timezone"],
             "writable": bool(row["writable"]),
             "owned": bool(row["owned"]),
+            "sync_enabled": bool(row["sync_enabled"]),
             "meeting_providers": CalendarStore._json_list(row["meeting_providers"]),
         }
 

@@ -36,6 +36,19 @@ else
   echo "WARN QML syntax checker unavailable"
 fi
 
+qml_test_runner=$(command -v qmltestrunner || true)
+if [[ -z $qml_test_runner && -x /usr/lib/qt6/bin/qmltestrunner ]]; then
+  qml_test_runner=/usr/lib/qt6/bin/qmltestrunner
+fi
+if [[ -n $qml_test_runner ]]; then
+  QT_QPA_PLATFORM=offscreen QSG_RHI_BACKEND=software "$qml_test_runner" \
+    -input "$project_root/tests/qml" \
+    -import "$project_root/tests/qml"
+  echo "PASS QML interactions"
+else
+  echo "WARN QML interaction runner unavailable"
+fi
+
 if command -v omarchy-plugin-validate >/dev/null 2>&1; then
   omarchy-plugin-validate "$project_root"
 elif command -v omarchy >/dev/null 2>&1; then

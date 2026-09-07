@@ -88,3 +88,45 @@ test("three theme presets expose complete semantic palettes", () => {
     ])
   }
 })
+
+test("account actions are account-specific and preserve separate enable and disconnect controls", () => {
+  const providers = [
+    { provider: "google", label: "Google", connected: true, editing_account_ids: [] },
+    { provider: "microsoft", label: "Outlook", connected: false, editing_account_ids: [] },
+  ]
+  const calendars = [
+    { provider: "google", account_id: "one", account_label: "one@example.com" },
+    { provider: "google", account_id: "two", account_label: "two@example.com" },
+  ]
+  const health = [
+    { provider: "google", account_id: "one", connected: true, stale: false },
+    { provider: "google", account_id: "two", connected: true, stale: true },
+  ]
+
+  const rows = settings.accountRows(providers, calendars, health)
+  const actions = settings.accountActions(rows)
+
+  assert.deepEqual(rows.map(row => [row.provider, row.account_id, row.account_label, row.editing]), [
+    ["google", "one", "one@example.com", false],
+    ["google", "two", "two@example.com", false],
+    ["microsoft", "", "Outlook", false],
+  ])
+  assert.deepEqual(actions.map(action => [action.provider, action.account_id, action.kind]), [
+    ["google", "one", "enable"],
+    ["google", "one", "disconnect"],
+    ["google", "two", "enable"],
+    ["google", "two", "disconnect"],
+    ["microsoft", "", "connect"],
+  ])
+})
+
+test("editing accounts expose status and disconnect without another enable action", () => {
+  const rows = settings.accountRows(
+    [{ provider: "google", label: "Google", connected: true, editing_account_ids: ["one"] }],
+    [{ provider: "google", account_id: "one", account_label: "one@example.com" }],
+    [{ provider: "google", account_id: "one", connected: true, stale: false }],
+  )
+
+  assert.equal(rows[0].editing, true)
+  assert.deepEqual(settings.accountActions(rows).map(action => action.kind), ["disconnect"])
+})

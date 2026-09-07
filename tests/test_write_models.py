@@ -2,6 +2,7 @@
 import sqlite3
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from omarchy_calendar.cache import CalendarStore
@@ -35,6 +36,12 @@ def editable_event() -> Event:
         recurrence=("RRULE:FREQ=WEEKLY;BYDAY=WE",),
         event_type="occurrence",
         organizer_owned=True,
+        start_day="2026-09-02",
+        end_day="2026-09-02",
+        series_revision='"series-etag-1"',
+        series_start="2026-08-05T10:00:00-05:00",
+        series_end="2026-08-05T11:00:00-05:00",
+        has_attendees=False,
     )
 
 
@@ -72,11 +79,27 @@ class WriteModelTests(unittest.TestCase):
 
             with CalendarStore(path) as store:
                 migrated = store.get_event("google:a:c:e")
+                store.upsert_event(replace(
+                    editable_event(),
+                    uid="google:a:c:e",
+                    account_id="a",
+                    account_label="a@example.com",
+                    calendar_id="c",
+                    provider_event_id="e",
+                    has_attendees=False,
+                ))
+                refreshed = store.get_event("google:a:c:e")
 
             self.assertEqual(migrated["title"], "Preserved")
             self.assertEqual(migrated["provider_event_id"], "")
             self.assertEqual(migrated["recurrence"], [])
             self.assertFalse(migrated["organizer_owned"])
+            self.assertEqual(migrated["start_day"], "")
+            self.assertEqual(migrated["series_revision"], "")
+            self.assertEqual(migrated["series_start"], "")
+            self.assertEqual(migrated["series_end"], "")
+            self.assertTrue(migrated["has_attendees"])
+            self.assertFalse(refreshed["has_attendees"])
 
     def test_calendar_catalog_keeps_empty_writable_destinations_and_event_revisions(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -92,6 +115,7 @@ class WriteModelTests(unittest.TestCase):
                     writable=True,
                     owned=True,
                     meeting_providers=("googleMeet",),
+                    sync_enabled=False,
                 )
                 store.replace_window(
                     "google", "account",
@@ -101,16 +125,52 @@ class WriteModelTests(unittest.TestCase):
                     calendars=[calendar],
                 )
                 view = store.view("2026-09-01T00:00:00Z", "2026-09-08T00:00:00Z")
+                fetched_calendar = store.get_calendar(view["calendars"][0]["key"])
 
             self.assertEqual(view["events"][0]["revision"], '"etag-1"')
             self.assertEqual(view["events"][0]["recurrence"], ["RRULE:FREQ=WEEKLY;BYDAY=WE"])
             self.assertTrue(view["events"][0]["organizer_owned"])
+            self.assertEqual(view["events"][0]["start_day"], "2026-09-02")
+            self.assertEqual(view["events"][0]["end_day"], "2026-09-02")
+            self.assertEqual(view["events"][0]["series_revision"], '"series-etag-1"')
+            self.assertEqual(view["events"][0]["series_start"], "2026-08-05T10:00:00-05:00")
+            self.assertEqual(view["events"][0]["series_end"], "2026-08-05T11:00:00-05:00")
+            self.assertFalse(view["events"][0]["has_attendees"])
             self.assertEqual(len(view["calendars"]), 1)
             self.assertTrue(view["calendars"][0]["writable"])
             self.assertTrue(view["calendars"][0]["owned"])
             self.assertEqual(view["calendars"][0]["account_id"], "account")
             self.assertEqual(view["calendars"][0]["timezone"], "America/Chicago")
             self.assertEqual(view["calendars"][0]["meeting_providers"], ["googleMeet"])
+            self.assertFalse(view["calendars"][0]["sync_enabled"])
+            self.assertFalse(fetched_calendar.sync_enabled)
+
+    def test_calendar_migration_marks_existing_catalog_rows_sync_enabled(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "calendar.db"
+            with CalendarStore(path) as store:
+                store.replace_window(
+                    "google", "account",
+                    "2026-09-01T00:00:00Z", "2026-09-08T00:00:00Z", [],
+                    ProviderHealth.ok("google", "account", "2026-09-02T14:01:00Z"),
+                    calendars=[Calendar(
+                        "google", "account", "person@example.com", "calendar",
+                        "Work", "#7aa2f7", "UTC", True, True,
+                    )],
+                )
+            connection = sqlite3.connect(path)
+            connection.execute("ALTER TABLE calendars RENAME TO calendars_current")
+            connection.execute(
+                "CREATE TABLE calendars AS SELECT provider, account_id, account_label, calendar_id, name, color, timezone, writable, owned, meeting_providers FROM calendars_current"
+            )
+            connection.execute("DROP TABLE calendars_current")
+            connection.commit()
+            connection.close()
+
+            with CalendarStore(path) as store:
+                view = store.view("2026-09-01T00:00:00Z", "2026-09-08T00:00:00Z")
+
+            self.assertTrue(view["calendars"][0]["sync_enabled"])
 
     def test_calendar_catalog_includes_an_empty_calendar_and_removal_is_account_scoped(self):
         with tempfile.TemporaryDirectory() as temporary:

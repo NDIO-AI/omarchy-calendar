@@ -7,19 +7,16 @@ import qs.Ui
 import "CalendarModel.js" as CalendarModel
 import "EventEditorModel.js" as EventEditorModel
 import "SettingsModel.js" as SettingsModel
-
 Panel {
     id: root
     moduleName: "io.github.joryeugene.omarchy-calendar"
     ipcTarget: "io.github.joryeugene.omarchy-calendar"
     manageIpc: false
-
     property var anchorItem: null
     property var hostWidget: null
     property var calendarService: null
     readonly property string helperPath: calendarService ? calendarService.helperPath : ""
     readonly property var barIdentity: hostWidget || root
-
     property string activeTab: "today"
     property date cursorDate: new Date()
     property date selectedDay: new Date()
@@ -39,14 +36,28 @@ Panel {
     property var editorDraft: ({})
     property var editorSource: null
     property string editorMode: "create"
+    property string editorReturnUid: ""
+    property var editorReturnDay: null
+    property var pendingWriteIntent: null
+    property string editingAuthProvider: ""
+    property string editingAuthAccountId: ""
     property bool mutationBusy: false
     property string mutationError: ""
     property string mutationPayload: ""
     property string mutationAction: ""
     property string pendingCopiedOriginalUid: ""
     property string pendingCopiedOriginalScope: "single"
+    property string pendingCopiedOriginalRevision: ""
+    property string pendingCopiedOriginalSeriesRevision: ""
+    property string pendingCopiedOriginalProvider: ""
+    property string pendingCopiedOriginalAccountId: ""
+    property bool pendingCopiedOriginalDeleteAvailable: false
+    property bool pendingCopiedOriginalNeedsPermission: false
+    property string pendingCopiedOriginalReason: ""
+    readonly property bool pendingCopiedOriginalOffline: root.copySourceOffline()
     property bool confirmCopiedOriginalDelete: false
     property string copyResultError: ""
+    property bool copyEditAuthorizationPending: false
     property string setupProvider: ""
     property var setupProviders: [
         {
@@ -86,7 +97,6 @@ Panel {
     property bool viewReloadPending: false
     property var settingsSnapshot: SettingsModel.normalize({})
     property var settingsDraft: SettingsModel.normalize({})
-
     readonly property var appliedSettings: SettingsModel.normalize(settings)
     readonly property var previewSettings: showSettings ? settingsDraft : appliedSettings
     readonly property int motionDuration: previewSettings.animations ? 140 : 0
@@ -111,9 +121,8 @@ Panel {
     readonly property int gridStartHour: Number(previewSettings.weekStartHour)
     readonly property int gridEndHour: Number(previewSettings.weekEndHour)
     readonly property bool syncing: calendarService ? calendarService.syncing : false
-    readonly property string updateStatus: root.demoData ? "Demo" : root.syncing ? "Updating" : CalendarModel.updateStatus(root.providers, root.nowTime)
+    readonly property string updateStatus: root.actionNotice !== "" ? root.actionNotice : root.demoData ? "Demo" : root.syncing ? "Updating" : CalendarModel.updateStatus(root.providers, root.nowTime)
     readonly property bool updateNeedsAttention: root.updateStatus.indexOf("reconnect") >= 0 || root.updateStatus.indexOf("stale") >= 0 || root.updateStatus.indexOf("Offline") >= 0
-
     Timer {
         interval: 60000
         running: root.opened
@@ -123,22 +132,15 @@ Panel {
     }
     Timer {
         id: actionNoticeTimer
-        interval: 1800
+        interval: 4000
         onTriggered: root.actionNotice = ""
     }
-    Shortcut {
-        sequences: ["Ctrl+Return", "Ctrl+Enter"]
-        enabled: root.opened && root.showEditor && !editorSurface.inputFocused
-        onActivated: root.saveDraft()
-    }
-
     Component.onCompleted: {
         root.activeTab = root.appliedSettings.defaultView;
         root.settingsDraft = SettingsModel.normalize(root.settings);
         if (root.calendarService)
             root.calendarService.syncIntervalMinutes = root.appliedSettings.syncIntervalMinutes;
     }
-
     function open() {
         root.controller.show();
         Qt.callLater(function () {
@@ -152,6 +154,7 @@ Panel {
     function close() {
         root.setCenterHoverRevealSuppressed(false);
         root.cancelDraft();
+        root.pendingWriteIntent = null;
         root.showHelp = false;
         root.showSettings = false;
         root.showSetup = false;
@@ -159,15 +162,9 @@ Panel {
         root.pendingDisconnect = "";
         root.controller.hide();
     }
-    function toggle() {
-        root.opened ? root.close() : root.open();
-    }
-    function refresh() {
-        root.loadView();
-    }
-    function closeForPopoutSwitch() {
-        root.close();
-    }
+    function toggle() { root.opened ? root.close() : root.open(); }
+    function refresh() { root.loadView(); }
+    function closeForPopoutSwitch() { root.close(); }
     function setCenterHoverRevealSuppressed(value) {
         if (root.bar && "centerHoverRevealSuppressed" in root.bar)
             root.bar.centerHoverRevealSuppressed = value;
@@ -177,12 +174,8 @@ Panel {
             return root.bar.switchPanelFrom(root.barIdentity, direction);
         return false;
     }
-    function helperCommand(arguments) {
-        return helperPath ? [helperPath].concat(arguments) : [];
-    }
-    function queryStart() {
-        return (activeTab === "today" ? CalendarModel.localMidnight(cursorDate) : CalendarModel.startOfWeek(cursorDate)).toISOString();
-    }
+    function helperCommand(arguments) { return helperPath ? [helperPath].concat(arguments) : []; }
+    function queryStart() { return (activeTab === "today" ? CalendarModel.localMidnight(cursorDate) : CalendarModel.startOfWeek(cursorDate)).toISOString(); }
     function queryEnd() {
         var start = activeTab === "today" ? CalendarModel.localMidnight(cursorDate) : CalendarModel.startOfWeek(cursorDate);
         return CalendarModel.addDays(start, activeTab === "today" ? 1 : 7).toISOString();
@@ -280,6 +273,10 @@ Panel {
         }
         return demoData ? "Demo data" : "Local cache";
     }
+    function copySourceOffline() {
+        for (var i = 0; i < providers.length; i++) if (providers[i].provider === pendingCopiedOriginalProvider && providers[i].account_id === pendingCopiedOriginalAccountId) return providers[i].connected === false || providers[i].stale === true;
+        return false;
+    }
     function setTab(tab) {
         activeTab = tab;
         cursorDate = selectedDay;
@@ -356,9 +353,7 @@ Panel {
         actionProcess.command = helperCommand(["copy-meeting", source.uid]);
         actionProcess.running = true;
     }
-    function cachedEvent(uid) {
-        return CalendarModel.eventByUid(root.cachedEvents, String(uid || ""));
-    }
+    function cachedEvent(uid) { return CalendarModel.eventByUid(root.cachedEvents, String(uid || "")); }
     function calendarForKey(key) {
         for (var i = 0; i < root.calendars.length; i++)
             if (String(root.calendars[i].key || "") === String(key || ""))
@@ -370,9 +365,12 @@ Panel {
         var accounts = state.editing_account_ids || [];
         return accounts.indexOf(String(accountId || "")) >= 0;
     }
-    function editorNeedsPermission() {
-        var calendar = root.calendarForKey(root.editorDraft.calendar_key);
-        return Boolean(calendar && !root.providerCanEdit(calendar.provider, calendar.account_id));
+    function editableCalendars() {
+        return EventEditorModel.editableDestinations(root.calendars, root.setupProviders);
+    }
+    function selectedEditAction() {
+        var action = EventEditorModel.editAction(root.selectedEvent, root.calendars, root.setupProviders);
+        return action === "Enable editing" ? "enable" : action === "Cannot edit" ? "cannot" : "edit";
     }
     function editorOffline() {
         var calendar = root.calendarForKey(root.editorDraft.calendar_key);
@@ -386,42 +384,91 @@ Panel {
         return false;
     }
     function minuteKey(value) {
-        var minute = Math.max(0, Math.min(1439, Number(value || 0)));
+        var minute = ((Number(value || 0) % 1440) + 1440) % 1440;
         var hour = Math.floor(minute / 60);
         var remainder = minute % 60;
         return (hour < 10 ? "0" : "") + hour + ":" + (remainder < 10 ? "0" : "") + remainder;
     }
-    function beginCreate(day, minute) {
-        var eventDay = CalendarModel.dayKey(day || root.selectedDay);
+    function openCreateDraft(day, minute) {
+        root.editorReturnUid = root.selectedUid;
+        root.editorReturnDay = new Date(root.selectedDay);
+        var eventDay = CalendarModel.dayKey(day || root.selectedDay); root.selectedDay = new Date(day || root.selectedDay); root.cursorDate = root.selectedDay; root.selectedUid = "";
         var startMinute = Number.isFinite(Number(minute)) ? Number(minute) : 9 * 60;
         root.editorSource = null;
-        root.editorDraft = EventEditorModel.newDraft(eventDay, root.minuteKey(startMinute), root.minuteKey(startMinute + 60), root.calendars);
+        root.editorDraft = EventEditorModel.newDraft(eventDay, root.minuteKey(startMinute), root.minuteKey(startMinute + 60), root.editableCalendars());
         root.editorMode = "create";
         root.mutationError = "";
         root.showHelp = false;
         root.showSettings = false;
         root.showSetup = false;
-        root.showEditor = true;
+        root.showEditor = true; editorSurface.resetInteraction();
     }
-    function beginEdit(event) {
+    function openEditDraft(event) {
         var source = event || root.selectedEvent;
         if (!source)
             return;
         root.editorSource = source;
-        root.editorDraft = EventEditorModel.eventDraft(source, false, null, root.calendars);
+        root.editorDraft = EventEditorModel.eventDraft(source, false, null, root.editableCalendars());
         root.editorMode = "update";
         root.mutationError = "";
-        root.showEditor = true;
+        root.showHelp = false;
+        root.showSettings = false;
+        root.showSetup = false;
+        root.showEditor = true; editorSurface.resetInteraction();
     }
-    function beginDuplicate(event) {
+    function openDuplicateDraft(event) {
         var source = event || root.selectedEvent;
         if (!source)
             return;
         root.editorSource = source;
-        root.editorDraft = EventEditorModel.eventDraft(source, true, null, root.calendars);
+        root.editorDraft = EventEditorModel.eventDraft(source, true, null, root.editableCalendars());
         root.editorMode = "copy";
         root.mutationError = "";
-        root.showEditor = true;
+        root.showHelp = false;
+        root.showSettings = false;
+        root.showSetup = false;
+        root.showEditor = true; editorSurface.resetInteraction();
+    }
+    function beginCreate(day, minute) { root.requestWriteIntent("create", null, day, minute, 0, 0); }
+    function beginEdit(event) { root.requestWriteIntent("edit", event, null, 0, 0, 0); }
+    function beginDuplicate(event) { root.requestWriteIntent("duplicate", event, null, 0, 0, 0); }
+    function requestWriteIntent(kind, event, day, minute, dayAmount, minuteAmount, durationAmount) {
+        var decision = EventEditorModel.writeDecision(kind, event, root.calendars, root.setupProviders);
+        var intent = { kind: kind, uid: event ? String(event.uid || "") : "", day: CalendarModel.dayKey(day || root.selectedDay), minute: Number(minute || 0), dayAmount: Number(dayAmount || 0), minuteAmount: Number(minuteAmount || 0), durationAmount: Number(durationAmount || 0) };
+        if (decision.action === "blocked") {
+            root.actionNotice = decision.reason;
+            actionNoticeTimer.restart();
+        } else if (decision.action === "settings") {
+            root.pendingWriteIntent = intent;
+            root.accountError = "";
+            root.openSettings(0);
+            settingsSurface.focusAccountAction(decision.provider, decision.account_id, "enable");
+        } else root.performWriteIntent(intent);
+    }
+    function performWriteIntent(intent) {
+        var source = intent.uid ? root.cachedEvent(intent.uid) : null;
+        if (intent.kind === "create") root.openCreateDraft(new Date(intent.day + "T12:00:00"), intent.minute);
+        else if (intent.kind === "duplicate") root.openDuplicateDraft(source);
+        else {
+            root.openEditDraft(source);
+            if (intent.kind === "move") root.moveActiveDraft(intent.dayAmount, intent.minuteAmount, intent.durationAmount);
+        }
+    }
+    function followDraftDay() {
+        var day = new Date(String(root.editorDraft.day) + "T12:00:00");
+        var previousWeek = CalendarModel.dayKey(CalendarModel.startOfWeek(root.selectedDay));
+        root.selectedDay = day;
+        root.cursorDate = day;
+        if (root.activeTab === "today" || previousWeek !== CalendarModel.dayKey(CalendarModel.startOfWeek(day))) root.loadView();
+    }
+    function moveActiveDraft(dayAmount, minuteAmount, durationAmount) {
+        if (root.editorDraft.all_day && minuteAmount !== 0) {
+            root.actionNotice = "All-day events move by day only.";
+            actionNoticeTimer.restart();
+            return;
+        }
+        root.updateEditorDraft(EventEditorModel.shift(root.editorDraft, dayAmount, minuteAmount, durationAmount));
+        root.followDraftDay();
     }
     function updateEditorDraft(next) {
         root.editorDraft = next;
@@ -429,21 +476,34 @@ Panel {
         root.mutationError = "";
     }
     function shiftDraft(uid, dayAmount, minuteAmount, durationAmount) {
+        if (root.showEditor && String(root.editorDraft.source_uid || "") === String(uid || "")) {
+            if (Number(durationAmount || 0) !== 0) root.updateEditorDraft(EventEditorModel.shift(root.editorDraft, 0, 0, Number(durationAmount)));
+            else root.moveActiveDraft(Number(dayAmount || 0), Number(minuteAmount || 0));
+            return;
+        }
         var source = root.cachedEvent(uid);
         if (!source)
             return;
-        if (!root.showEditor || String(root.editorDraft.source_uid || "") !== String(uid || ""))
-            root.beginEdit(source);
-        root.updateEditorDraft(EventEditorModel.shift(root.editorDraft, Number(dayAmount || 0), Number(minuteAmount || 0), Number(durationAmount || 0)));
+        root.selectUid(uid, CalendarModel.eventDay(source));
+        root.requestWriteIntent("move", source, null, 0, Number(dayAmount || 0), Number(minuteAmount || 0), Number(durationAmount || 0));
     }
     function cancelDraft() {
         if (root.mutationBusy)
             return;
+        var restoreCreateSelection = root.editorMode === "create" && root.editorReturnDay;
         root.showEditor = false;
         root.editorDraft = ({});
         root.editorSource = null;
         root.editorMode = "create";
         root.mutationError = "";
+        if (restoreCreateSelection) {
+            root.selectedDay = new Date(root.editorReturnDay);
+            root.cursorDate = root.selectedDay;
+            root.selectedUid = root.editorReturnUid;
+        }
+        root.editorReturnUid = "";
+        root.editorReturnDay = null;
+        Qt.callLater(function () { keyCatcher.forceActiveFocus(); });
     }
     function startMutation(action, payload) {
         if (root.mutationBusy || root.helperPath === "")
@@ -456,7 +516,7 @@ Panel {
         mutationProcess.running = true;
     }
     function saveDraft() {
-        if (!root.showEditor || root.editorOffline() || root.editorNeedsPermission())
+        if (!root.showEditor || root.editorOffline())
             return;
         var action = root.editorMode === "copy" ? "copy-event" : root.editorMode === "update" ? "update-event" : "create-event";
         root.startMutation(action, root.editorDraft);
@@ -464,24 +524,42 @@ Panel {
     function deleteDraft(scope) {
         if (root.editorMode !== "update")
             return;
-        if (!root.editorSource || root.editorOffline() || root.editorNeedsPermission())
-            return;
+        if (!root.editorSource || root.editorOffline()) return;
+        if (!editorSurface.canDelete) return;
         root.startMutation("delete-event", {
-            uid: root.editorSource.uid,
-            scope: scope
+            uid: root.editorSource.uid, confirmed: true,
+            scope: scope,
+            expected_revision: root.editorDraft.source_revision,
+            series_revision: root.editorDraft.series_revision
         });
     }
-    function enableEditing() {
-        var calendar = root.calendarForKey(root.editorDraft.calendar_key);
-        if (!calendar || editAuthProcess.running)
+    function enableEditingFor(provider, accountId) {
+        if (!provider || !accountId || editAuthProcess.running)
             return;
         root.accountBusy = true;
-        root.mutationError = "";
-        editAuthProcess.command = root.helperCommand(["enable-editing", calendar.provider, "--account", calendar.account_id]);
+        root.accountError = "";
+        root.editingAuthProvider = provider;
+        root.editingAuthAccountId = accountId;
+        editAuthProcess.command = root.helperCommand(["enable-editing", provider, "--account", accountId]);
+        editAuthProcess.running = true;
+    }
+    function enableCopiedOriginalEditing() {
+        if (!root.pendingCopiedOriginalNeedsPermission || editAuthProcess.running)
+            return;
+        root.copyEditAuthorizationPending = true;
+        root.accountBusy = true;
+        root.copyResultError = "";
+        editAuthProcess.command = root.helperCommand(["enable-editing", root.pendingCopiedOriginalProvider, "--account", root.pendingCopiedOriginalAccountId]);
         editAuthProcess.running = true;
     }
     function deleteCopiedOriginal() {
-        if (!root.pendingCopiedOriginalUid)
+        if (!root.pendingCopiedOriginalUid || root.pendingCopiedOriginalOffline)
+            return;
+        if (root.pendingCopiedOriginalNeedsPermission) {
+            root.enableCopiedOriginalEditing();
+            return;
+        }
+        if (!root.pendingCopiedOriginalDeleteAvailable)
             return;
         if (!root.confirmCopiedOriginalDelete) {
             root.confirmCopiedOriginalDelete = true;
@@ -489,12 +567,22 @@ Panel {
         }
         root.confirmCopiedOriginalDelete = false;
         root.startMutation("delete-event", {
-            uid: root.pendingCopiedOriginalUid,
-            scope: root.pendingCopiedOriginalScope
+            uid: root.pendingCopiedOriginalUid, confirmed: true,
+            scope: root.pendingCopiedOriginalScope, expected_revision: root.pendingCopiedOriginalRevision,
+            series_revision: root.pendingCopiedOriginalSeriesRevision,
+            series_transfer_guard: root.pendingCopiedOriginalScope === "series"
         });
     }
     function keepBothCopies() {
         root.pendingCopiedOriginalUid = "";
+        root.pendingCopiedOriginalScope = "single";
+        root.pendingCopiedOriginalRevision = "";
+        root.pendingCopiedOriginalSeriesRevision = "";
+        root.pendingCopiedOriginalProvider = "";
+        root.pendingCopiedOriginalAccountId = "";
+        root.pendingCopiedOriginalDeleteAvailable = false;
+        root.pendingCopiedOriginalNeedsPermission = false;
+        root.pendingCopiedOriginalReason = "";
         root.confirmCopiedOriginalDelete = false;
         root.copyResultError = "";
     }
@@ -513,6 +601,7 @@ Panel {
         root.showSettings = true;
         settingsSurface.sectionIndex = Math.max(0, Math.min(3, Number(section || 0)));
         settingsSurface.controlIndex = 0;
+        Qt.callLater(function () { keyCatcher.forceActiveFocus(); });
     }
     function updateDraft(key, value) {
         root.settingsDraft = SettingsModel.withValue(root.settingsDraft, key, value);
@@ -548,12 +637,15 @@ Panel {
             calendarService.syncIntervalMinutes = next.syncIntervalMinutes;
         root.showSettings = false;
         root.pendingReset = false;
+        root.pendingWriteIntent = null;
     }
     function cancelSettings() {
         root.settingsDraft = SettingsModel.normalize(root.settingsSnapshot);
         root.showSettings = false;
         root.pendingReset = false;
         root.pendingDisconnect = "";
+        root.pendingWriteIntent = null;
+        root.accountError = "";
         Qt.callLater(root.ensureVisibleSelection);
     }
     function openSetup(provider) {
@@ -590,15 +682,30 @@ Panel {
         authProcess.command = helperCommand(["auth", provider, "--access", access || "read"]);
         authProcess.running = true;
     }
-    function requestDisconnect(provider) {
-        if (pendingDisconnect !== provider) {
-            pendingDisconnect = provider;
+    function requestDisconnect(provider, accountId) {
+        var key = provider + ":" + String(accountId || "");
+        if (pendingDisconnect !== key) {
+            pendingDisconnect = key;
             return;
         }
         pendingDisconnect = "";
         accountBusy = true;
-        disconnectProcess.command = helperCommand(["disconnect", provider]);
+        disconnectProcess.command = helperCommand(["disconnect", provider].concat(accountId ? ["--account", accountId] : []));
         disconnectProcess.running = true;
+    }
+    function markEditing(provider, accountId) {
+        var next = [];
+        for (var i = 0; i < root.setupProviders.length; i++) {
+            var state = {};
+            for (var key in root.setupProviders[i]) state[key] = root.setupProviders[i][key];
+            if (state.provider === provider) {
+                state.editing_account_ids = (state.editing_account_ids || []).slice();
+                if (state.editing_account_ids.indexOf(accountId) < 0) state.editing_account_ids.push(accountId);
+                state.editing = true;
+            }
+            next.push(state);
+        }
+        root.setupProviders = next;
     }
     function requestReset() {
         if (!pendingReset) {
@@ -611,7 +718,6 @@ Panel {
         resetProcess.command = helperCommand(["reset-local-data"]);
         resetProcess.running = true;
     }
-
     Process {
         id: viewProcess
         stdout: StdioCollector {
@@ -747,9 +853,33 @@ Panel {
             waitForEnd: true
         }
         onExited: function (exitCode) {
+            var copiedOriginalUpgrade = root.copyEditAuthorizationPending;
+            root.copyEditAuthorizationPending = false;
             root.accountBusy = false;
-            if (exitCode !== 0)
-                root.mutationError = String(editAuthError.text || "Could not enable editing").trim();
+            if (exitCode !== 0) {
+                var failure = String(editAuthError.text || "Could not enable editing").trim();
+                if (copiedOriginalUpgrade)
+                    root.copyResultError = failure;
+                else {
+                    root.accountError = failure;
+                    root.showSettings = true;
+                    settingsSurface.focusAccountAction(root.editingAuthProvider, root.editingAuthAccountId, "enable");
+                }
+            } else if (copiedOriginalUpgrade && root.pendingCopiedOriginalUid !== "") {
+                root.pendingCopiedOriginalDeleteAvailable = true;
+                root.pendingCopiedOriginalNeedsPermission = false;
+                root.pendingCopiedOriginalReason = "Editing enabled. Delete the original when ready.";
+            } else {
+                root.markEditing(root.editingAuthProvider, root.editingAuthAccountId);
+                root.accountError = "";
+                if (root.pendingWriteIntent) {
+                    var intent = root.pendingWriteIntent;
+                    root.pendingWriteIntent = null;
+                    root.performWriteIntent(intent);
+                }
+            }
+            root.editingAuthProvider = "";
+            root.editingAuthAccountId = "";
             root.loadSetupStatus();
         }
     }
@@ -775,16 +905,25 @@ Panel {
                 try {
                     var result = JSON.parse(String(mutationStdout.text || "{}"));
                     if (completedAction === "copy-event") {
-                        root.pendingCopiedOriginalUid = result.delete_original_available ? String(result.original_uid || "") : "";
-                        root.pendingCopiedOriginalScope = String(root.editorDraft.scope || "single");
-                        root.confirmCopiedOriginalDelete = false;
-                    } else if (wasCopiedOriginalDelete) {
-                        root.pendingCopiedOriginalUid = "";
+                        root.pendingCopiedOriginalUid = String(result.original_uid || "");
+                        root.pendingCopiedOriginalScope = String(result.original_scope || "single");
+                        root.pendingCopiedOriginalRevision = String(result.original_revision || "");
+                        root.pendingCopiedOriginalSeriesRevision = String(result.original_series_revision || "");
+                        root.pendingCopiedOriginalProvider = String(result.original_provider || "");
+                        root.pendingCopiedOriginalAccountId = String(result.original_account_id || "");
+                        root.pendingCopiedOriginalDeleteAvailable = result.delete_original_available === true;
+                        root.pendingCopiedOriginalNeedsPermission = result.delete_original_needs_permission === true;
+                        root.pendingCopiedOriginalReason = String(result.delete_original_reason || "");
                         root.confirmCopiedOriginalDelete = false;
                         root.copyResultError = "";
+                    } else if (wasCopiedOriginalDelete) {
+                        root.keepBothCopies();
                     }
                     if (result.event && result.event.uid)
                         root.selectedUid = String(result.event.uid);
+                    root.actionNotice = String(result.notice || (completedAction === "delete-event" ? "Event deleted"
+                        : completedAction === "copy-event" ? "Copy saved" : "Event saved"));
+                    if (root.actionNotice !== "") actionNoticeTimer.restart();
                     root.showEditor = false;
                     root.editorDraft = ({});
                     root.editorSource = null;
@@ -792,6 +931,7 @@ Panel {
                     root.mutationError = "";
                     root.loadView();
                     root.refreshProviders();
+                    Qt.callLater(function () { keyCatcher.forceActiveFocus(); });
                 } catch (error) {
                     root.mutationError = "The provider returned an unreadable response. Your draft is preserved.";
                 }
@@ -801,6 +941,7 @@ Panel {
                     root.copyResultError = "The copy was saved, but the original remains. " + failure;
                 else
                     root.mutationError = failure;
+                if (EventEditorModel.isMutationConflict(failure)) { root.loadView(); root.refreshProviders(); }
             }
             root.mutationBusy = false;
             root.mutationAction = "";
@@ -840,7 +981,6 @@ Panel {
             root.actionKind = "";
         }
     }
-
     Connections {
         target: root.calendarService
         function onRevisionChanged() {
@@ -850,7 +990,6 @@ Panel {
             root.loadSetupStatus();
         }
     }
-
     KeyboardPanel {
         id: panel
         anchorItem: root.anchorItem
@@ -861,17 +1000,20 @@ Panel {
         focusTarget: keyCatcher
         contentWidth: panel.fittedContentWidth(root.showEditor ? Style.space(1400) : Style.space(1080))
         contentHeight: panel.fittedContentHeight(Style.space(720))
-
-        PanelKeyCatcher {
+        CalendarKeyCatcher {
             id: keyCatcher
             anchors.fill: parent
             blocked: (root.showSetup && setupSurface.inputFocused) || (root.showEditor && editorSurface.inputFocused)
+            onModifiedMoveRequested: function (dx, dy) { root.shiftDraft(root.selectedUid, dx, dy * 15, 0); }
             onMoveRequested: function (dx, dy) {
+                if (root.pendingCopiedOriginalUid !== "") { if (dy < 0) root.keepBothCopies(); return; }
                 if (root.showEditor) {
                     if (dx !== 0)
                         editorSurface.adjustCurrent(dx);
                     else if (dy !== 0)
                         editorSurface.moveField(dy);
+                } else if (root.showSetup && dx !== 0) {
+                    setupSurface.cycleAccess(dx);
                 } else if (root.showSettings) {
                     if (dx !== 0)
                         settingsSurface.moveSection(dx);
@@ -885,7 +1027,9 @@ Panel {
                 }
             }
             onActivateRequested: {
-                if (root.showEditor)
+                if (root.pendingCopiedOriginalUid !== "")
+                    return;
+                else if (root.showEditor)
                     editorSurface.activateCurrent();
                 else if (root.showSetup)
                     setupSurface.activatePrimary();
@@ -903,8 +1047,8 @@ Panel {
             }
             onTextKey: function (text) {
                 if (root.pendingCopiedOriginalUid !== "") {
-                    if (text === "k")
-                        root.keepBothCopies();
+                    if (text === "e" && root.pendingCopiedOriginalNeedsPermission)
+                        root.enableCopiedOriginalEditing();
                     return;
                 }
                 if (text === "?" && !root.showSetup && !root.showEditor) {
@@ -941,8 +1085,10 @@ Panel {
                     }
                     return;
                 }
-                if (root.showSetup)
+                if (root.showSetup) {
+                    if (text === "h" || text === "l") setupSurface.cycleAccess(text === "h" ? -1 : 1);
                     return;
+                }
                 if (text === "t")
                     root.setTab("today");
                 else if (text === "w")
@@ -981,19 +1127,15 @@ Panel {
             Rectangle {
                 anchors.fill: parent
                 color: root.palette.background
-
                 Column {
                     anchors.fill: parent
-
                     Rectangle {
                         width: parent.width
                         height: Style.space(58)
                         color: root.palette.surface
                         border.color: root.palette.border
                         border.width: 0
-
                         Text {
-
                             textFormat: Text.PlainText
                             anchors.left: parent.left
                             anchors.leftMargin: Style.space(18)
@@ -1005,7 +1147,6 @@ Panel {
                             font.bold: true
                             font.letterSpacing: 1.2
                         }
-
                         Row {
                             anchors.centerIn: parent
                             spacing: Style.space(8)
@@ -1050,7 +1191,6 @@ Panel {
                                 }
                             }
                         }
-
                         Row {
                             anchors.right: parent.right
                             anchors.rightMargin: Style.space(16)
@@ -1114,11 +1254,9 @@ Panel {
                             }
                         }
                     }
-
                     Item {
                         width: parent.width
                         height: parent.height - Style.space(58)
-
                         DateNavigator {
                             id: dateNavigator
                             anchors.left: parent.left
@@ -1137,7 +1275,6 @@ Panel {
                             onNextRequested: root.stepPeriod(1)
                             onNowRequested: root.goCurrent()
                         }
-
                         TodayView {
                             id: todaySurface
                             anchors.left: parent.left
@@ -1145,7 +1282,7 @@ Panel {
                             anchors.rightMargin: root.showEditor ? Style.space(352) : 0
                             anchors.top: dateNavigator.bottom
                             anchors.bottom: parent.bottom
-                            visible: root.activeTab === "today"
+                            visible: root.activeTab === "today" && !root.showSettings && !root.showSetup
                             day: root.cursorDate
                             events: root.dayEvents
                             selectedEvent: root.selectedEvent
@@ -1156,6 +1293,7 @@ Panel {
                             density: root.previewSettings.density
                             motionDuration: root.motionDuration
                             providerStatus: root.providerStatusFor(root.selectedEvent)
+                            editAction: root.selectedEditAction()
                             actionError: root.actionError
                             onEventSelected: function (uid, day) {
                                 root.selectUid(uid, day);
@@ -1164,8 +1302,7 @@ Panel {
                             onSourceRequested: root.openSource()
                             onEditRequested: root.beginEdit(root.selectedEvent)
                             onDuplicateRequested: root.beginDuplicate(root.selectedEvent)
-                        }
-
+                            }
                         WeekView {
                             id: weekSurface
                             anchors.left: parent.left
@@ -1173,7 +1310,7 @@ Panel {
                             anchors.rightMargin: root.showEditor ? Style.space(352) : 0
                             anchors.top: dateNavigator.bottom
                             anchors.bottom: parent.bottom
-                            visible: root.activeTab === "week"
+                            visible: root.activeTab === "week" && !root.showSettings && !root.showSetup
                             events: root.events
                             weekDays: root.weekDays
                             selectedDay: root.selectedDay
@@ -1187,6 +1324,7 @@ Panel {
                             fontFamily: root.contentFontFamily
                             textScale: root.textScale
                             motionDuration: root.motionDuration
+                            editAction: root.selectedEditAction()
                             editingDraft: root.showEditor ? root.editorDraft : null
                             editingUid: root.showEditor ? String(root.editorDraft.source_uid || "") : ""
                             onEventSelected: function (uid, day) {
@@ -1205,8 +1343,7 @@ Panel {
                             onSourceRequested: root.openSource()
                             onEditRequested: root.beginEdit(root.selectedEvent)
                             onDuplicateRequested: root.beginDuplicate(root.selectedEvent)
-                        }
-
+                            }
                         EventEditor {
                             id: editorSurface
                             anchors.top: parent.top
@@ -1217,14 +1354,13 @@ Panel {
                             z: 30
                             draft: root.editorDraft
                             eventData: root.editorSource
-                            calendars: root.calendars
+                            calendars: root.editableCalendars()
                             mode: root.editorMode
                             palette: root.palette
                             fontFamily: root.contentFontFamily
                             textScale: root.textScale
                             busy: root.mutationBusy || root.accountBusy
                             offline: root.editorOffline()
-                            needsPermission: root.editorNeedsPermission()
                             errorText: root.mutationError
                             noticeText: root.actionNotice
                             onDraftUpdated: function (next) {
@@ -1232,87 +1368,36 @@ Panel {
                             }
                             onSaveRequested: root.saveDraft()
                             onCancelRequested: root.cancelDraft()
-                            onDeleteRequested: function (scope) {
-                                root.deleteDraft(scope);
-                            }
-                            onEnableEditingRequested: root.enableEditing()
+                            onDeleteRequested: function (scope) { root.deleteDraft(scope); }
+                            onDuplicateRequested: root.beginDuplicate(root.editorSource)
                             onCopyMeetingRequested: root.copyMeeting()
-                        }
-
-                        Rectangle {
-                            objectName: "copyResultOffer"
+                            onInputNavigationRequested: function (direction) {
+                                editorSurface.moveField(direction);
+                                keyCatcher.forceActiveFocus();
+                            }
+                            }
+                        CopyResultOffer {
                             visible: root.pendingCopiedOriginalUid !== ""
                             anchors.horizontalCenter: parent.horizontalCenter
                             anchors.bottom: parent.bottom
                             anchors.bottomMargin: Style.space(18)
                             width: Math.min(parent.width - Style.space(40), Style.space(560))
-                            height: Style.space(root.copyResultError ? 112 : 86)
-                            radius: Style.space(8)
-                            color: root.palette.surface
-                            border.color: root.copyResultError ? root.palette.urgent : root.palette.positive
                             z: 35
-                            Column {
-                                anchors.fill: parent
-                                anchors.margins: Style.space(12)
-                                spacing: Style.space(8)
-                                Text {
-                                    textFormat: Text.PlainText
-                                    width: parent.width
-                                    text: root.copyResultError || "Copy saved and verified. The original is unchanged."
-                                    color: root.copyResultError ? root.palette.urgent : root.palette.foreground
-                                    font.family: root.contentFontFamily
-                                    font.pixelSize: Style.font.caption * root.textScale
-                                    wrapMode: Text.Wrap
-                                }
-                                Row {
-                                    width: parent.width
-                                    height: Style.space(34)
-                                    spacing: Style.space(8)
-                                    Rectangle {
-                                        width: (parent.width - parent.spacing) / 2
-                                        height: parent.height
-                                        radius: Style.space(5)
-                                        color: "transparent"
-                                        border.color: root.palette.border
-                                        Text {
-                                            textFormat: Text.PlainText
-                                            anchors.centerIn: parent
-                                            text: "k  Keep both"
-                                            color: root.palette.foreground
-                                            font.family: root.contentFontFamily
-                                            font.pixelSize: Style.font.caption * root.textScale
-                                        }
-                                        MouseArea {
-                                            anchors.fill: parent
-                                            onClicked: root.keepBothCopies()
-                                        }
-                                    }
-                                    Rectangle {
-                                        width: (parent.width - parent.spacing) / 2
-                                        height: parent.height
-                                        radius: Style.space(5)
-                                        color: root.palette.urgent
-                                        Text {
-                                            textFormat: Text.PlainText
-                                            anchors.centerIn: parent
-                                            text: root.confirmCopiedOriginalDelete ? "x  Confirm delete" : "x  Delete original"
-                                            color: root.palette.background
-                                            font.family: root.contentFontFamily
-                                            font.pixelSize: Style.font.caption * root.textScale
-                                            font.bold: true
-                                        }
-                                        MouseArea {
-                                            anchors.fill: parent
-                                            enabled: !root.mutationBusy
-                                            onClicked: root.deleteCopiedOriginal()
-                                        }
-                                    }
-                                }
-                            }
+                            palette: root.palette
+                            fontFamily: root.contentFontFamily
+                            textScale: root.textScale
+                            reason: root.pendingCopiedOriginalOffline ? "The source account is offline. The copy is saved and the original remains." : root.pendingCopiedOriginalReason
+                            errorText: root.copyResultError
+                            canDeleteOriginal: root.pendingCopiedOriginalDeleteAvailable && !root.pendingCopiedOriginalOffline
+                            needsPermission: root.pendingCopiedOriginalNeedsPermission && !root.pendingCopiedOriginalOffline
+                            confirmDelete: root.confirmCopiedOriginalDelete
+                            busy: root.mutationBusy || root.accountBusy
+                            onKeepRequested: root.keepBothCopies()
+                            onDeleteRequested: root.deleteCopiedOriginal()
+                            onEnableEditingRequested: root.enableCopiedOriginalEditing()
                         }
-
                         Rectangle {
-                            visible: !root.loading && root.events.length === 0 && !root.showSettings && !root.showSetup
+                            visible: !root.loading && root.events.length === 0 && !root.showSettings && !root.showSetup && !root.showEditor
                             anchors.centerIn: parent
                             width: Style.space(560)
                             height: Style.space(240)
@@ -1383,7 +1468,6 @@ Panel {
                                 }
                             }
                         }
-
                         SettingsView {
                             id: settingsSurface
                             anchors.fill: parent
@@ -1392,6 +1476,7 @@ Panel {
                             z: 20
                             draft: root.settingsDraft
                             providers: root.setupProviders
+                            providerHealth: root.providers
                             calendars: root.calendars
                             palette: root.palette
                             fontFamily: root.contentFontFamily
@@ -1408,12 +1493,14 @@ Panel {
                             onSetupRequested: function (provider) {
                                 root.openSetup(provider);
                             }
-                            onDisconnectRequested: function (provider) {
-                                root.requestDisconnect(provider);
+                            onEnableEditingRequested: function (provider, accountId) {
+                                root.enableEditingFor(provider, accountId);
+                            }
+                            onDisconnectRequested: function (provider, accountId) {
+                                root.requestDisconnect(provider, accountId);
                             }
                             onResetRequested: root.requestReset()
                         }
-
                         SetupView {
                             id: setupSurface
                             anchors.centerIn: parent
@@ -1442,7 +1529,6 @@ Panel {
                                 root.openSettings(0);
                             }
                         }
-
                         HelpOverlay {
                             anchors.centerIn: parent
                             width: Math.min(parent.width - Style.space(80), Style.space(720))
@@ -1453,7 +1539,6 @@ Panel {
                             fontFamily: root.contentFontFamily
                             textScale: root.textScale
                         }
-
                         Rectangle {
                             visible: root.loading && root.events.length === 0
                             anchors.fill: parent
@@ -1474,7 +1559,6 @@ Panel {
             }
         }
     }
-
     function handleEscape() {
         if (root.pendingReset)
             root.pendingReset = false;
@@ -1482,6 +1566,8 @@ Panel {
             root.pendingDisconnect = "";
         else if (root.pendingCopiedOriginalUid !== "")
             root.keepBothCopies();
+        else if (root.showEditor && editorSurface.confirmDelete)
+            editorSurface.confirmDelete = false;
         else if (root.showEditor)
             root.cancelDraft();
         else if (root.showSetup) {

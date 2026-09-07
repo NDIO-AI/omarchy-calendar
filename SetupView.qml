@@ -45,6 +45,9 @@ Rectangle {
         clientInput.text = "";
         root.accessChoice = "read";
     }
+    function cycleAccess(direction) {
+        root.accessChoice = Number(direction) < 0 ? "read" : "edit";
+    }
 
     FileDialog {
         id: googleCredentialsDialog

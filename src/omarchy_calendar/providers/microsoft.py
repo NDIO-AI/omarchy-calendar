@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
+from ..http import HttpError
 from ..models import Account, Calendar, Event
 from ..normalize import extract_meeting_url, is_safe_https_url, plain_text
 
@@ -88,7 +89,8 @@ def _meeting_url(raw: dict[str, Any]) -> str:
     if is_safe_https_url(legacy):
         return legacy
     location = str((raw.get("location") or {}).get("displayName") or "")
-    return extract_meeting_url(location, str(raw.get("bodyPreview") or ""))
+    body = str((raw.get("body") or {}).get("content") or raw.get("bodyPreview") or "")
+    return extract_meeting_url(location, body)
 
 
 def normalize_microsoft_event(
@@ -102,7 +104,14 @@ def normalize_microsoft_event(
     event_id = str(raw.get("id") or "")
     organizer = (raw.get("organizer") or {}).get("emailAddress") or {}
     organizer_text = str(organizer.get("name") or organizer.get("address") or "")
+    organizer_owned = (
+        bool(raw["isOrganizer"])
+        if "isOrganizer" in raw
+        else str(organizer.get("address") or "").casefold() == account.label.casefold()
+    )
     location = str((raw.get("location") or {}).get("displayName") or "")
+    event_type = str(raw.get("type") or "")
+    series_master = event_type == "seriesMaster"
     provider_url = str(raw.get("webLink") or "")
     if not is_safe_https_url(provider_url):
         provider_url = ""
@@ -120,7 +129,7 @@ def normalize_microsoft_event(
         all_day=bool(raw.get("isAllDay")),
         status="confirmed",
         location=plain_text(location, 500),
-        description=plain_text(str(raw.get("bodyPreview") or "")),
+        description=plain_text(str((raw.get("body") or {}).get("content") or raw.get("bodyPreview") or ""), 8192),
         organizer=organizer_text,
         meeting_url=_meeting_url(raw),
         provider_url=provider_url,
@@ -130,11 +139,17 @@ def normalize_microsoft_event(
         timezone=str((raw.get("start") or {}).get("timeZone") or "UTC"),
         recurrence_id=str(raw.get("seriesMasterId") or ""),
         event_type=(
-            "occurrence" if str(raw.get("type") or "") in ("occurrence", "exception")
-            else "series" if str(raw.get("type") or "") == "seriesMaster"
+            "occurrence" if event_type in ("occurrence", "exception")
+            else "series" if series_master
             else "single"
         ),
-        organizer_owned=str(organizer.get("address") or "").casefold() == account.label.casefold(),
+        organizer_owned=organizer_owned,
+        start_day=str((raw.get("start") or {}).get("dateTime") or "")[:10],
+        end_day=str((raw.get("end") or {}).get("dateTime") or "")[:10],
+        series_revision=str(raw.get("_seriesRevision") or (raw.get("changeKey") if series_master else "") or ""),
+        series_start=str(raw.get("_seriesStart") or (_graph_time(raw.get("start", {})) if series_master else "")),
+        series_end=str(raw.get("_seriesEnd") or (_graph_time(raw.get("end", {})) if series_master else "")),
+        has_attendees=bool(raw.get("attendees")),
     )
 
 
@@ -211,9 +226,9 @@ class MicrosoftProvider:
     ) -> list[Event]:
         calendar_id = quote(str(calendar["id"]), safe="")
         fields = (
-            "id,subject,start,end,isAllDay,isCancelled,bodyPreview,location,"
-            "organizer,onlineMeeting,onlineMeetingUrl,webLink,showAs,"
-            "lastModifiedDateTime,type,seriesMasterId,changeKey,recurrence"
+            "id,subject,start,end,isAllDay,isCancelled,body,bodyPreview,location,"
+            "organizer,isOrganizer,onlineMeeting,onlineMeetingUrl,webLink,showAs,"
+            "lastModifiedDateTime,type,seriesMasterId,changeKey,recurrence,attendees"
         )
         query = urlencode({
             "startDateTime": start,
@@ -222,12 +237,34 @@ class MicrosoftProvider:
             "$top": "1000",
         })
         url = f"{GRAPH}/me/calendars/{calendar_id}/calendarView?{query}"
-        events: list[Event] = []
+        raw_events: list[dict[str, Any]] = []
         while url:
             payload = self.http.get_json(url, headers=headers)
-            for raw in payload.get("value", []):
-                event = normalize_microsoft_event(raw, account, calendar)
-                if event is not None:
-                    events.append(event)
+            raw_events.extend(payload.get("value", []))
             url = str(payload.get("@odata.nextLink") or "")
+        masters: dict[str, tuple[str, str, str]] = {}
+        # ponytail: one read per visible series; batch/cache only if provider quota becomes measurable.
+        for series_id in dict.fromkeys(str(item.get("seriesMasterId") or "") for item in raw_events):
+            if not series_id:
+                continue
+            try:
+                master = self.http.get_json(
+                    f"{GRAPH}/me/calendars/{calendar_id}/events/{quote(series_id, safe='')}?{urlencode({'$select': 'id,changeKey,start,end'})}",
+                    headers=headers,
+                )
+                masters[series_id] = (
+                    str(master.get("changeKey") or ""),
+                    _graph_time(master.get("start", {})),
+                    _graph_time(master.get("end", {})),
+                )
+            except HttpError:
+                pass
+        events: list[Event] = []
+        for item in raw_events:
+            raw = dict(item)
+            master = masters.get(str(raw.get("seriesMasterId") or ""), ("", "", ""))
+            raw["_seriesRevision"], raw["_seriesStart"], raw["_seriesEnd"] = master
+            event = normalize_microsoft_event(raw, account, calendar)
+            if event is not None:
+                events.append(event)
         return events

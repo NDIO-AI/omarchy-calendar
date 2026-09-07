@@ -63,6 +63,7 @@ class EventDraftTests(unittest.TestCase):
             ({"start": "11:00", "end": "10:00"}, "after"),
             ({"online_meeting": "javascript:alert(1)"}, "meeting"),
             ({"scope": "following"}, "scope"),
+            ({"recurrence": "daily"}, "recurrence"),
             ({"notes": "x" * 9000}, "notes"),
         )
         for changes, message in cases:
@@ -87,6 +88,16 @@ class EventDraftTests(unittest.TestCase):
             EventDraft.from_dict(draft_payload(recurrence={
                 "frequency": "selected_weekdays", "weekdays": [], "end": "never",
             }))
+
+    def test_recurrence_start_must_match_its_weekday_pattern(self):
+        for recurrence in (
+            {"frequency": "weekdays", "weekdays": [], "end": "never"},
+            {"frequency": "selected_weekdays", "weekdays": ["MO", "FR"], "end": "never"},
+        ):
+            with self.subTest(recurrence=recurrence), self.assertRaisesRegex(
+                DraftError, "start day must match"
+            ):
+                EventDraft.from_dict(draft_payload(day="2026-09-05", recurrence=recurrence))
 
     def test_existing_series_can_preserve_its_remote_schedule(self):
         draft = EventDraft.from_dict(draft_payload(recurrence={
@@ -123,6 +134,24 @@ class ProviderPayloadTests(unittest.TestCase):
         self.assertEqual(payload["end"], {"date": "2026-09-03"})
         self.assertFalse(conference)
 
+    def test_provider_payloads_preserve_multi_day_and_overnight_ranges(self):
+        multi_day = EventDraft.from_dict(draft_payload(
+            day="2026-09-02", end_day="2026-09-05", all_day=True, start="", end="",
+        ))
+        overnight = EventDraft.from_dict(draft_payload(
+            day="2026-09-02", end_day="2026-09-03", start="23:30", end="01:00",
+        ))
+
+        google_all_day, _ = google_payload(multi_day, GOOGLE_CALENDAR)
+        google_overnight, _ = google_payload(overnight, GOOGLE_CALENDAR)
+        microsoft_all_day = microsoft_payload(multi_day, MICROSOFT_CALENDAR)
+        microsoft_overnight = microsoft_payload(overnight, MICROSOFT_CALENDAR)
+
+        self.assertEqual(google_all_day["end"], {"date": "2026-09-05"})
+        self.assertIn("2026-09-03T01:00:00", google_overnight["end"]["dateTime"])
+        self.assertEqual(microsoft_all_day["end"]["dateTime"], "2026-09-05T00:00:00")
+        self.assertEqual(microsoft_overnight["end"]["dateTime"], "2026-09-03T01:00:00")
+
     def test_google_recurrence_end_date_uses_the_calendar_timezone(self):
         draft = EventDraft.from_dict(draft_payload(recurrence={
             "frequency": "daily", "weekdays": [], "end": "date", "until": "2026-12-31",
@@ -131,6 +160,16 @@ class ProviderPayloadTests(unittest.TestCase):
         payload, _ = google_payload(draft, GOOGLE_CALENDAR)
 
         self.assertEqual(payload["recurrence"], ["RRULE:FREQ=DAILY;UNTIL=20270101T055959Z"])
+
+    def test_google_all_day_recurrence_end_date_matches_date_only_start(self):
+        draft = EventDraft.from_dict(draft_payload(
+            all_day=True, start="", end="",
+            recurrence={"frequency": "daily", "weekdays": [], "end": "date", "until": "2026-12-31"},
+        ))
+
+        payload, _ = google_payload(draft, GOOGLE_CALENDAR)
+
+        self.assertEqual(payload["recurrence"], ["RRULE:FREQ=DAILY;UNTIL=20261231"])
 
     def test_dst_gap_and_ambiguous_local_times_are_rejected_before_network_use(self):
         cases = (("2026-03-08", "02:30"), ("2026-11-01", "01:30"))
@@ -168,13 +207,39 @@ class ProviderPayloadTests(unittest.TestCase):
         self.assertTrue(payload["isAllDay"])
 
     def test_copy_preserves_existing_meeting_link_in_notes(self):
-        draft = EventDraft.from_dict(draft_payload(online_meeting="preserve"))
+        draft = EventDraft.from_dict(draft_payload(
+            online_meeting="preserve", notes="N" * 8192,
+        ))
 
         google, _ = google_payload(draft, GOOGLE_CALENDAR, "https://teams.microsoft.com/l/meetup-join/demo")
         microsoft = microsoft_payload(draft, MICROSOFT_CALENDAR, "https://meet.google.com/abc-defg-hij")
 
-        self.assertIn("https://teams.microsoft.com/l/meetup-join/demo", google["description"])
-        self.assertIn("https://meet.google.com/abc-defg-hij", microsoft["body"]["content"])
+        self.assertTrue(google["description"].startswith(
+            "Meeting: https://teams.microsoft.com/l/meetup-join/demo"
+        ))
+        self.assertTrue(microsoft["body"]["content"].startswith(
+            "Meeting: https://meet.google.com/abc-defg-hij"
+        ))
+
+    def test_copy_removes_the_source_meeting_link_when_it_is_not_preserved(self):
+        old_link = "https://meet.google.com/abc-defg-hij"
+        for mode in ("new", "none"):
+            with self.subTest(mode=mode):
+                copied = EventDraft.from_dict(draft_payload(
+                    online_meeting=mode,
+                    notes=f"Agenda\n\nMeeting: {old_link}\n\nBring notes",
+                    location=f"Room B {old_link}",
+                ))
+
+                google, _ = google_payload(copied, GOOGLE_CALENDAR, old_link)
+                microsoft = microsoft_payload(copied, MICROSOFT_CALENDAR, old_link)
+
+                self.assertNotIn(old_link, google["description"])
+                self.assertNotIn(old_link, microsoft["body"]["content"])
+                self.assertNotIn(old_link, google["location"])
+                self.assertNotIn(old_link, microsoft["location"]["displayName"])
+                self.assertNotIn("Meeting:", google["description"])
+                self.assertNotIn("Meeting:", microsoft["body"]["content"])
 
     def test_new_meeting_requires_the_destination_to_report_support(self):
         requested = EventDraft.from_dict(draft_payload(online_meeting="new"))

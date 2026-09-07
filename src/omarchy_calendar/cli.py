@@ -169,7 +169,7 @@ def setup_status(
                     "https://www.googleapis.com/auth/calendar.events.owned"
                     if provider == "google" else "Calendars.ReadWrite"
                 )
-                if token.get("access_mode") == "edit" or write_scope in scopes:
+                if write_scope in scopes:
                     editing_accounts.append(str(account["account_id"]))
         providers.append({
             "provider": provider,
@@ -347,10 +347,18 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             if arguments.command == "delete-event":
                 payload = read_stdin_json()
+                if payload.get("confirmed") is not True:
+                    raise ValueError("Event deletion requires explicit confirmation")
                 uid = str(payload.get("uid") or "")
                 if not uid or len(uid) > 2048:
                     raise ValueError("Event identity is invalid")
-                emit(MutationService(store).delete_event(uid, scope=str(payload.get("scope") or "single")))
+                emit(MutationService(store).delete_event(
+                    uid,
+                    scope=str(payload.get("scope") or "single"),
+                    expected_revision=str(payload.get("expected_revision") or ""),
+                    series_revision=str(payload.get("series_revision") or ""),
+                    series_transfer_guard=payload.get("series_transfer_guard") is True,
+                ))
                 return 0
             if arguments.command == "open-meeting":
                 return open_event_url(store, arguments.uid, "meeting_url")

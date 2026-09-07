@@ -16,10 +16,10 @@ Rectangle {
   border.width: 1
 
   readonly property var groups: [
-    { title: "Calendar", rows: [["t / w", "Today or Week"], ["h / l", "Overlap lane, then day"], ["j / k", "Up or down through events"], ["[ / ]", "Previous or next period"], ["g", "Now and nearest event"]] },
-    { title: "Actions", rows: [["Enter", "Toggle details"], ["m", "Join meeting"], ["o", "Open source event"], ["r", "Refresh calendars"], ["?", "Toggle help"]] },
-    { title: "Editing", rows: [["n", "New event"], ["e", "Edit selected event"], ["d", "Duplicate selected event"], ["Ctrl+Enter", "Save draft"], ["Escape", "Cancel draft"]] },
-    { title: "Settings and accounts", rows: [["s", "Open Settings"], ["c", "Open Calendars"], ["h / l", "Move between sections"], ["j / k", "Move between controls"], ["Enter / Space", "Activate control"], ["a", "Apply settings"]] },
+    { title: "Calendar", rows: [["t / w", "Today or Week"], ["h / l", "Overlap lane, then day"], ["j / k", "Up or down through events"], ["[ / ]", "Previous or next period"], ["g", "Current or next event"], ["Enter", "Toggle details"], ["m", "Join meeting"], ["o", "Open source event"]] },
+    { title: "Settings and accounts", rows: [["r", "Refresh calendars"], ["?", "Toggle help"], ["s", "Open Settings"], ["c", "Open Calendars"], ["h / l", "Move between sections"], ["j / k", "Move between controls"], ["Enter / Space", "Activate control"], ["a", "Apply settings"]] },
+    { title: "Editing", rows: [["n / e / d", "New, edit, or duplicate"], ["Shift+H / L", "Move draft one day"], ["Shift+J / K", "Move draft 15 minutes"], ["j / k", "Move between editor fields"], ["h / l", "Change the field value"], ["Enter", "Choose recurrence scope or delete"], ["Ctrl+Enter", "Save the draft"], ["Esc", "Cancel the draft"]] },
+    { title: "Copy result", rows: [["k", "Keep both copies"], ["e", "Enable source editing"], ["x", "Delete or confirm original"], ["Esc", "Keep both and close"]] },
   ]
 
   Column {
@@ -50,7 +50,7 @@ Rectangle {
         Rectangle {
           required property var modelData
           width: (helpGrid.width - helpGrid.columnSpacing) / 2
-          height: Style.space(160)
+          height: Style.space(164)
           color: root.palette.surface
           radius: Style.space(8)
           border.color: root.palette.border
@@ -58,8 +58,8 @@ Rectangle {
 
           Column {
             anchors.fill: parent
-            anchors.margins: Style.space(12)
-            spacing: Style.space(4)
+            anchors.margins: Style.space(6)
+            spacing: Style.space(1)
             Text {
               textFormat: Text.PlainText
               text: modelData.title.toUpperCase()
@@ -76,7 +76,7 @@ Rectangle {
                 height: Style.space(16)
                 spacing: Style.space(8)
                 Rectangle {
-                  width: Style.space(82)
+                  width: Style.space(96)
                   height: parent.height
                   radius: Style.space(4)
                   color: Qt.rgba(1, 1, 1, 0.05)
@@ -94,7 +94,7 @@ Rectangle {
                 }
                 Text {
                   textFormat: Text.PlainText
-                  width: parent.width - Style.space(90)
+                  width: parent.width - Style.space(104)
                   text: String(modelData[1])
                   color: root.palette.muted
                   font.family: root.fontFamily

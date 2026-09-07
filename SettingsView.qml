@@ -2,6 +2,7 @@
 import QtQuick
 import qs.Commons
 import "CalendarModel.js" as CalendarModel
+import "SettingsModel.js" as SettingsModel
 
 Rectangle {
   id: root
@@ -9,6 +10,7 @@ Rectangle {
 
   property var draft: ({})
   property var providers: []
+  property var providerHealth: []
   property var calendars: []
   property var palette: ({})
   property string fontFamily: Style.font.family
@@ -24,10 +26,13 @@ Rectangle {
   signal applyRequested()
   signal cancelRequested()
   signal setupRequested(string provider)
-  signal disconnectRequested(string provider)
+  signal enableEditingRequested(string provider, string accountId)
+  signal disconnectRequested(string provider, string accountId)
   signal resetRequested()
 
-  readonly property var sections: ["Calendars", "Appearance", "Preferences", "About and Privacy"]
+  readonly property var sections: ["Accounts and Calendars", "Appearance", "Preferences", "About and Privacy"]
+  readonly property var accountItems: SettingsModel.accountRows(providers, calendars, providerHealth)
+  readonly property var accountActionItems: SettingsModel.accountActions(accountItems)
   readonly property var appearanceControls: [
     { key: "theme", label: "Theme", options: [
       { label: "Kinetic Tokyo Night", value: "kinetic-tokyo-night" },
@@ -57,10 +62,26 @@ Rectangle {
     if (sectionIndex === 2) return preferenceControls
     return []
   }
-  function providerAt(index) {
-    return index >= 0 && index < providers.length ? providers[index] : null
+  function accountActionAt(index) {
+    return index >= 0 && index < accountActionItems.length ? accountActionItems[index] : null
   }
-  function providerCount() { return providers.length }
+  function accountActionCount() { return accountActionItems.length }
+  function accountActionsForRow(row) {
+    return accountActionItems.filter(function(action) { return action.row === row })
+  }
+  function accountActionIndex(provider, accountId, kind) {
+    for (var i = 0; i < accountActionItems.length; i++) {
+      var action = accountActionItems[i]
+      if (action.provider === provider && String(action.account_id || "") === String(accountId || "") && action.kind === kind)
+        return i
+    }
+    return -1
+  }
+  function focusAccountAction(provider, accountId, kind) {
+    sectionIndex = 0
+    var index = accountActionIndex(provider, accountId, kind || "enable")
+    controlIndex = index >= 0 ? index : 0
+  }
   function calendarGroups() {
     var groups = []
     for (var i = 0; i < calendars.length; i++) {
@@ -77,13 +98,13 @@ Rectangle {
     return groups
   }
   function bulkControlCount() { return calendarGroups().length * 2 }
-  function calendarBaseIndex() { return providerCount() + bulkControlCount() }
+  function calendarBaseIndex() { return accountActionCount() + bulkControlCount() }
   function resetControlIndex() { return calendarBaseIndex() + calendars.length }
   function groupControlIndex(provider, visible) {
     var groups = calendarGroups()
     for (var i = 0; i < groups.length; i++)
       if (groups[i].provider === provider)
-        return providerCount() + i * 2 + (visible ? 0 : 1)
+        return accountActionCount() + i * 2 + (visible ? 0 : 1)
     return -1
   }
   function calendarControlIndex(key) {
@@ -113,11 +134,13 @@ Rectangle {
     }
     updateRequested("hiddenCalendars", hidden)
   }
-  function controlCount() {
+  function bodyControlCount() {
     if (sectionIndex === 0) return resetControlIndex() + 1
     if (sectionIndex === 3) return 2
     return activeControls().length
   }
+  function footerBaseIndex() { return bodyControlCount() }
+  function controlCount() { return bodyControlCount() + 2 }
   function moveSection(amount) {
     sectionIndex = (sectionIndex + amount + sections.length) % sections.length
     controlIndex = 0
@@ -148,17 +171,20 @@ Rectangle {
     updateRequested(control.key, control.options[next].value)
   }
   function activateCurrent() {
+    if (controlIndex === footerBaseIndex()) { cancelRequested(); return }
+    if (controlIndex === footerBaseIndex() + 1) { applyRequested(); return }
     if (sectionIndex === 1 || sectionIndex === 2) {
       cycleControl(controlIndex, 1)
       return
     }
     if (sectionIndex === 0) {
-      var provider = controlIndex < providerCount() ? providerAt(controlIndex) : null
-      if (provider) {
-        if (provider.connected) disconnectRequested(provider.provider)
-        else setupRequested(provider.provider)
+      var action = controlIndex < accountActionCount() ? accountActionAt(controlIndex) : null
+      if (action) {
+        if (action.kind === "enable") enableEditingRequested(action.provider, action.account_id)
+        else if (action.kind === "disconnect") disconnectRequested(action.provider, action.account_id)
+        else setupRequested(action.provider)
       } else if (controlIndex < calendarBaseIndex()) {
-        var bulkOffset = controlIndex - providerCount()
+        var bulkOffset = controlIndex - accountActionCount()
         var group = calendarGroups()[Math.floor(bulkOffset / 2)]
         var show = bulkOffset % 2 === 0
         setProviderVisible(group.provider, show)
@@ -240,7 +266,7 @@ Rectangle {
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         anchors.margins: Style.space(14)
-        text: "h / l sections\nj / k controls\nEnter or Space change"
+        text: "h / l sections\nj / k controls\nEnter / Space activate\na apply · Esc cancel"
         color: root.palette.muted
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption * root.textScale
@@ -309,55 +335,75 @@ Rectangle {
             }
 
             Repeater {
-              model: root.providers
+              model: root.accountItems
               Rectangle {
-                id: providerCard
+                id: accountCard
                 required property var modelData
                 required property int index
-                property bool current: root.controlIndex === index
+                property var actions: root.accountActionsForRow(index)
+                property bool current: actions.some(function(action) {
+                  return root.controlIndex === root.accountActionIndex(action.provider, action.account_id, action.kind)
+                })
                 width: parent.width
                 height: Style.space(104)
                 radius: Style.space(8)
                 color: root.palette.surface
                 border.color: current ? root.palette.accent : root.palette.border
                 border.width: current ? 2 : 1
-                onCurrentChanged: if (current) Qt.callLater(function() { root.revealSettingsItem(providerCard) })
+                onCurrentChanged: if (current) root.revealSettingsItem(accountCard)
 
                 Column {
                   anchors.left: parent.left
                   anchors.leftMargin: Style.space(14)
                   anchors.verticalCenter: parent.verticalCenter
-                  width: parent.width - Style.space(190)
+                  width: parent.width - Style.space(modelData.connected && !modelData.editing ? 286 : 176)
                   spacing: Style.space(5)
-                  Text { textFormat: Text.PlainText; text: String(modelData.label || modelData.provider); color: root.palette.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body * root.textScale; font.bold: true }
-                  Text { textFormat: Text.PlainText; text: modelData.connected ? modelData.editing ? "Connected with editing" : "Connected and read-only" : modelData.client_configured ? "Ready to connect" : "Local developer registration needed"; color: modelData.connected ? root.palette.positive : root.palette.muted; font.family: root.fontFamily; font.pixelSize: Style.font.caption * root.textScale }
-                  Text { textFormat: Text.PlainText; width: parent.width; text: modelData.connected ? CalendarModel.updateStatus([modelData], new Date()) : "No live sync yet"; color: modelData.stale ? root.palette.urgent : root.palette.muted; font.family: root.fontFamily; font.pixelSize: Style.font.caption * root.textScale; elide: Text.ElideRight }
+                  Text { textFormat: Text.PlainText; width: parent.width; text: String(modelData.provider_label); color: root.palette.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body * root.textScale; font.bold: true; elide: Text.ElideRight }
+                  Text { textFormat: Text.PlainText; width: parent.width; text: String(modelData.account_label); color: root.palette.muted; font.family: root.fontFamily; font.pixelSize: Style.font.caption * root.textScale; elide: Text.ElideRight }
+                  Text { textFormat: Text.PlainText; width: parent.width; text: modelData.connected ? modelData.editing ? "Editing enabled" : "Connected and read-only" : "Ready to connect"; color: modelData.stale ? root.palette.urgent : modelData.connected ? root.palette.positive : root.palette.muted; font.family: root.fontFamily; font.pixelSize: Style.font.caption * root.textScale; elide: Text.ElideRight }
                 }
 
-                Rectangle {
+                Row {
                   anchors.right: parent.right
                   anchors.rightMargin: Style.space(14)
                   anchors.verticalCenter: parent.verticalCenter
-                  width: Style.space(146)
-                  height: Style.space(38)
-                  radius: Style.space(6)
-                  color: modelData.connected && root.pendingDisconnect === modelData.provider
-                    ? root.palette.urgent : modelData.connected ? "transparent" : root.palette.accent
-                  border.color: modelData.connected ? root.palette.urgent : root.palette.accent
-                  border.width: 1
-                  Text {
-                    textFormat: Text.PlainText
-                    anchors.centerIn: parent
-                    text: modelData.connected
-                      ? root.pendingDisconnect === modelData.provider ? "Confirm disconnect" : "Disconnect"
-                      : "Connect"
-                    color: modelData.connected && root.pendingDisconnect !== modelData.provider
-                      ? root.palette.urgent : root.palette.background
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption * root.textScale
-                    font.bold: true
+                  spacing: Style.space(8)
+                  Repeater {
+                    model: accountCard.actions
+                    Rectangle {
+                      required property var modelData
+                      property int actionIndex: root.accountActionIndex(modelData.provider, modelData.account_id, modelData.kind)
+                      property bool current: root.controlIndex === actionIndex
+                      width: Style.space(modelData.kind === "enable" ? 132 : 112)
+                      height: Style.space(38)
+                      radius: Style.space(6)
+                      color: modelData.kind === "enable" || modelData.kind === "connect" ? root.palette.accent
+                        : root.pendingDisconnect === modelData.provider + ":" + modelData.account_id ? root.palette.urgent : "transparent"
+                      border.color: current ? root.palette.foreground : modelData.kind === "disconnect" ? root.palette.urgent : root.palette.accent
+                      border.width: current ? 2 : 1
+                      Text {
+                        textFormat: Text.PlainText
+                        anchors.centerIn: parent
+                        width: parent.width - Style.space(10)
+                        text: modelData.kind === "enable" ? "Enable editing" : modelData.kind === "connect" ? "Connect"
+                          : root.pendingDisconnect === modelData.provider + ":" + modelData.account_id ? "Confirm" : "Disconnect"
+                        color: modelData.kind === "disconnect" && root.pendingDisconnect !== modelData.provider + ":" + modelData.account_id ? root.palette.urgent : root.palette.background
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption * root.textScale
+                        font.bold: true
+                        horizontalAlignment: Text.AlignHCenter
+                        elide: Text.ElideRight
+                        clip: true
+                      }
+                      MouseArea {
+                        anchors.fill: parent
+                        onClicked: {
+                          root.controlIndex = parent.actionIndex;
+                          root.activateCurrent();
+                        }
+                      }
+                    }
                   }
-                  MouseArea { anchors.fill: parent; onClicked: modelData.connected ? root.disconnectRequested(modelData.provider) : root.setupRequested(modelData.provider) }
                 }
               }
             }
@@ -391,7 +437,7 @@ Rectangle {
                 textFormat: Text.PlainText
                 visible: root.calendars.length === 0
                 width: parent.width
-                text: "Calendars appear here after their first event is cached."
+                text: "Calendars appear here after the first successful sync."
                 color: root.palette.muted
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall * root.textScale
@@ -428,7 +474,7 @@ Rectangle {
                       color: current ? Qt.rgba(0.478, 0.635, 0.969, 0.18) : "transparent"
                       border.color: current ? root.palette.accent : root.palette.border
                       border.width: current ? 2 : 1
-                      onCurrentChanged: if (current) Qt.callLater(function() { root.revealSettingsItem(showAllButton) })
+                      onCurrentChanged: if (current) root.revealSettingsItem(showAllButton)
                       Text { textFormat: Text.PlainText; anchors.centerIn: parent; text: "Show all"; color: root.palette.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.caption * root.textScale }
                       MouseArea { anchors.fill: parent; onClicked: { root.controlIndex = root.groupControlIndex(providerCalendarGroup.modelData.provider, true); root.setProviderVisible(providerCalendarGroup.modelData.provider, true) } }
                     }
@@ -441,7 +487,7 @@ Rectangle {
                       color: current ? Qt.rgba(0.478, 0.635, 0.969, 0.18) : "transparent"
                       border.color: current ? root.palette.accent : root.palette.border
                       border.width: current ? 2 : 1
-                      onCurrentChanged: if (current) Qt.callLater(function() { root.revealSettingsItem(hideAllButton) })
+                      onCurrentChanged: if (current) root.revealSettingsItem(hideAllButton)
                       Text { textFormat: Text.PlainText; anchors.centerIn: parent; text: "Hide all"; color: root.palette.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.caption * root.textScale }
                       MouseArea { anchors.fill: parent; onClicked: { root.controlIndex = root.groupControlIndex(providerCalendarGroup.modelData.provider, false); root.setProviderVisible(providerCalendarGroup.modelData.provider, false) } }
                     }
@@ -459,7 +505,7 @@ Rectangle {
                       color: root.isCalendarHidden(modelData.key) ? "transparent" : root.palette.surface
                       border.color: current ? root.palette.accent : root.palette.border
                       border.width: current ? 2 : 1
-                      onCurrentChanged: if (current) Qt.callLater(function() { root.revealSettingsItem(calendarRow) })
+                      onCurrentChanged: if (current) root.revealSettingsItem(calendarRow)
 
                       Rectangle {
                         anchors.left: parent.left
@@ -522,7 +568,7 @@ Rectangle {
               color: "transparent"
               border.color: current ? root.palette.urgent : root.palette.border
               border.width: current ? 2 : 1
-              onCurrentChanged: if (current) Qt.callLater(function() { root.revealSettingsItem(resetCard) })
+              onCurrentChanged: if (current) root.revealSettingsItem(resetCard)
               Text {
                 textFormat: Text.PlainText
                 anchors.left: parent.left
@@ -688,7 +734,7 @@ Rectangle {
                 anchors.fill: parent
                 anchors.margins: Style.space(14)
                 spacing: Style.space(8)
-                Text { textFormat: Text.PlainText; text: "Flight Deck Calendar  1.1.0-alpha.1"; color: root.palette.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body * root.textScale; font.bold: true }
+                Text { textFormat: Text.PlainText; text: "Flight Deck Calendar  1.1.0"; color: root.palette.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body * root.textScale; font.bold: true }
                 Text { textFormat: Text.PlainText; width: parent.width; text: "Flight Deck Calendar puts Google Calendar and Outlook in one Omarchy panel. Accounts are read-only by default. It has no hosted backend, telemetry, analytics, or AI."; color: root.palette.muted; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall * root.textScale; wrapMode: Text.Wrap }
                 Text { textFormat: Text.PlainText; width: parent.width; text: "Scopes\nGoogle: identity, calendar lists, and events read-only; optional calendar.events.owned\nMicrosoft: identity, profile, and Calendars.Read; optional Calendars.ReadWrite\n\nStorage\nOAuth tokens: Secret Service keyring\nCalendar data: local SQLite cache"; color: root.palette.muted; font.family: root.fontFamily; font.pixelSize: Style.font.caption * root.textScale; lineHeight: 1.35; wrapMode: Text.Wrap }
               }
@@ -745,12 +791,13 @@ Rectangle {
           spacing: Style.space(8)
           Item { width: parent.width - Style.space(264); height: 1 }
           Rectangle {
+            property bool current: root.controlIndex === root.footerBaseIndex()
             width: Style.space(124)
             height: parent.height
             radius: Style.space(6)
             color: "transparent"
-            border.color: root.palette.border
-            border.width: 1
+            border.color: current ? root.palette.accent : root.palette.border
+            border.width: current ? 2 : 1
             Text {
               textFormat: Text.PlainText
               anchors.centerIn: parent
@@ -760,13 +807,16 @@ Rectangle {
               font.pixelSize: Style.font.caption * root.textScale
               font.bold: true
             }
-            MouseArea { anchors.fill: parent; onClicked: root.cancelRequested() }
+            MouseArea { anchors.fill: parent; onClicked: { root.controlIndex = root.footerBaseIndex(); root.cancelRequested() } }
           }
           Rectangle {
+            property bool current: root.controlIndex === root.footerBaseIndex() + 1
             width: Style.space(124)
             height: parent.height
             radius: Style.space(6)
             color: root.palette.accent
+            border.color: current ? root.palette.foreground : root.palette.accent
+            border.width: current ? 2 : 0
             Text {
               textFormat: Text.PlainText
               anchors.centerIn: parent
@@ -776,7 +826,7 @@ Rectangle {
               font.pixelSize: Style.font.caption * root.textScale
               font.bold: true
             }
-            MouseArea { anchors.fill: parent; onClicked: root.applyRequested() }
+            MouseArea { anchors.fill: parent; onClicked: { root.controlIndex = root.footerBaseIndex() + 1; root.applyRequested() } }
           }
         }
       }
