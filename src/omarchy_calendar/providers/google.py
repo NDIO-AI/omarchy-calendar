@@ -6,7 +6,8 @@ from typing import Any
 from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from ..models import Account, Event
+from ..http import HttpError
+from ..models import Account, Calendar, Event
 from ..normalize import extract_meeting_url, is_recognized_meeting_url, is_safe_https_url, plain_text
 
 
@@ -54,6 +55,9 @@ def normalize_google_event(
     calendar_id = str(calendar.get("id") or "")
     organizer = raw.get("organizer", {})
     organizer_text = str(organizer.get("displayName") or organizer.get("email") or "")
+    recurring_id = str(raw.get("recurringEventId") or "")
+    recurrence = tuple(str(item) for item in raw.get("recurrence", []) if item)
+    series_master = bool(recurrence) and not recurring_id
     provider_url = str(raw.get("htmlLink") or "")
     if not is_safe_https_url(provider_url):
         provider_url = ""
@@ -71,11 +75,50 @@ def normalize_google_event(
         all_day=all_day,
         status=str(raw.get("status") or "confirmed"),
         location=plain_text(str(raw.get("location") or ""), 500),
-        description=plain_text(str(raw.get("description") or "")),
+        description=plain_text(str(raw.get("description") or ""), 8192),
         organizer=organizer_text,
         meeting_url=_conference_url(raw),
         provider_url=provider_url,
         updated=str(raw.get("updated") or ""),
+        provider_event_id=event_id,
+        revision=str(raw.get("etag") or ""),
+        timezone=str((raw.get("start") or {}).get("timeZone") or calendar.get("timeZone") or "UTC"),
+        recurrence_id=recurring_id,
+        recurrence=recurrence,
+        event_type=(
+            "occurrence" if raw.get("recurringEventId")
+            else "series" if raw.get("recurrence")
+            else "single"
+        ),
+        organizer_owned=bool(organizer.get("self")) or str(organizer.get("email") or "").casefold() == account.label.casefold(),
+        start_day=str((raw.get("start") or {}).get("date") or (raw.get("start") or {}).get("dateTime") or "")[:10],
+        end_day=str((raw.get("end") or {}).get("date") or (raw.get("end") or {}).get("dateTime") or "")[:10],
+        series_revision=str(raw.get("_seriesRevision") or (raw.get("etag") if series_master else "") or ""),
+        series_start=str(raw.get("_seriesStart") or (start if series_master else "")),
+        series_end=str(raw.get("_seriesEnd") or (end if series_master else "")),
+        has_attendees=bool(raw.get("attendees")),
+    )
+
+
+def normalize_google_calendar(raw: dict[str, Any], account: Account) -> Calendar:
+    access_role = str(raw.get("accessRole") or "reader")
+    data_owner = str(raw.get("dataOwner") or "")
+    providers = tuple(
+        "googleMeet" if item == "hangoutsMeet" else str(item)
+        for item in (raw.get("conferenceProperties") or {}).get("allowedConferenceSolutionTypes", [])
+    )
+    return Calendar(
+        provider="google",
+        account_id=account.account_id,
+        account_label=account.label,
+        calendar_id=str(raw.get("id") or ""),
+        name=str(raw.get("summary") or "Google Calendar"),
+        color=str(raw.get("backgroundColor") or "#7aa2f7"),
+        timezone=str(raw.get("timeZone") or "UTC"),
+        writable=access_role in ("writer", "owner"),
+        owned=bool(raw.get("primary")) or bool(data_owner) and data_owner.casefold() == account.label.casefold(),
+        meeting_providers=providers,
+        sync_enabled=raw.get("selected") is not False,
     )
 
 
@@ -83,7 +126,7 @@ class GoogleProvider:
     def __init__(self, http: Any):
         self.http = http
 
-    def fetch_window(self, token: str, start: str, end: str) -> tuple[Account, list[Event]]:
+    def fetch_window(self, token: str, start: str, end: str) -> tuple[Account, list[Calendar], list[Event]]:
         headers = {"Authorization": f"Bearer {token}"}
         identity = self.http.get_json(GOOGLE_USERINFO, headers=headers)
         account = Account(
@@ -91,13 +134,16 @@ class GoogleProvider:
             account_id=str(identity["sub"]),
             label=str(identity.get("email") or "Google"),
         )
-        calendars = self._calendar_list(headers)
+        raw_calendars = self._calendar_list(headers)
+        calendars = [normalize_google_calendar(item, account) for item in raw_calendars]
         events: list[Event] = []
-        for calendar in calendars:
-            if calendar.get("selected") is False or calendar.get("deleted") is True:
+        for calendar, normalized in zip(raw_calendars, calendars):
+            if calendar.get("deleted") is True:
+                continue
+            if not normalized.sync_enabled:
                 continue
             events.extend(self._events(calendar, account, headers, start, end))
-        return account, events
+        return account, calendars, events
 
     def _calendar_list(self, headers: dict[str, str]) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
@@ -123,8 +169,9 @@ class GoogleProvider:
         start: str,
         end: str,
     ) -> list[Event]:
-        events: list[Event] = []
+        raw_events: list[dict[str, Any]] = []
         page_token = ""
+        calendar_id = quote(str(calendar["id"]), safe="")
         while True:
             query = {
                 "timeMin": start,
@@ -135,15 +182,35 @@ class GoogleProvider:
             }
             if page_token:
                 query["pageToken"] = page_token
-            calendar_id = quote(str(calendar["id"]), safe="")
             payload = self.http.get_json(
                 f"{GOOGLE_API}/calendars/{calendar_id}/events?{urlencode(query)}",
                 headers=headers,
             )
-            for raw in payload.get("items", []):
-                event = normalize_google_event(raw, account, calendar)
-                if event is not None:
-                    events.append(event)
+            raw_events.extend(payload.get("items", []))
             page_token = str(payload.get("nextPageToken") or "")
             if not page_token:
-                return events
+                break
+        masters: dict[str, tuple[str, str, str]] = {}
+        # ponytail: one read per visible series; batch/cache only if provider quota becomes measurable.
+        for series_id in dict.fromkeys(str(item.get("recurringEventId") or "") for item in raw_events):
+            if not series_id:
+                continue
+            try:
+                master = self.http.get_json(
+                    f"{GOOGLE_API}/calendars/{calendar_id}/events/{quote(series_id, safe='')}",
+                    headers=headers,
+                )
+                master_start, _ = _google_time(master.get("start", {}), calendar)
+                master_end, _ = _google_time(master.get("end", {}), calendar)
+                masters[series_id] = (str(master.get("etag") or ""), master_start, master_end)
+            except HttpError:
+                pass
+        events: list[Event] = []
+        for item in raw_events:
+            raw = dict(item)
+            master = masters.get(str(raw.get("recurringEventId") or ""), ("", "", ""))
+            raw["_seriesRevision"], raw["_seriesStart"], raw["_seriesEnd"] = master
+            event = normalize_google_event(raw, account, calendar)
+            if event is not None:
+                events.append(event)
+        return events

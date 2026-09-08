@@ -2,17 +2,18 @@
 
 ## Supported version
 
-Security fixes target the current tagged release and the current release-candidate branch.
+Security fixes target the current tagged release and the active development branch.
 
 ## Report a vulnerability
 
-After the repository is public, submit suspected token leaks, unsafe URL launches, scope escalations, keyring failures, or private event disclosures through [GitHub's private vulnerability reporting](https://github.com/joryeugene/omarchy-calendar/security/advisories/new). Do not open a public issue.
+Submit suspected token leaks, unsafe URL launches, scope escalations, keyring failures, or private event disclosures through [GitHub's private vulnerability reporting](https://github.com/joryeugene/omarchy-calendar/security/advisories/new). Do not open a public issue.
 
 Include the affected version, exact local steps, expected behavior, observed behavior, and whether real account data may have been exposed. Remove tokens, authorization codes, client credentials, account identities, and event content from reports and screenshots.
 
 ## Security invariants
 
-- Provider access stays read-only.
+- Provider access stays read-only unless the user grants the optional event-editing scope for an account.
+- Event writes are limited to owned calendars, use a separate route allowlist, and occur only after an explicit save or confirmed deletion.
 - OAuth uses PKCE S256 and verifies state.
 - Tokens stay in Secret Service, never dotfiles.
 - Event and meeting actions allow safe HTTPS URLs only and never invoke a shell.

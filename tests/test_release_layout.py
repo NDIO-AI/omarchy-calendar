@@ -61,25 +61,29 @@ def _static_site_dependency_violations(site):
     homepage = site / "index.html"
     privacy = site / "privacy" / "index.html"
     terms = site / "terms" / "index.html"
-    published = site / "assets" / "flight-deck-calendar-week.png"
+    published_editor = site / "assets" / "flight-deck-calendar-editor.png"
+    published_week = site / "assets" / "flight-deck-calendar-week.png"
     headers = site / "_headers"
     violations = []
 
     expected_files = {
         Path(".well-known/microsoft-identity-association.json"),
         Path("_headers"),
+        Path("assets/flight-deck-calendar-editor.png"),
         Path("assets/flight-deck-calendar-week.png"),
         Path("index.html"),
         Path("privacy/index.html"),
         Path("styles.css"),
         Path("terms/index.html"),
     }
-    for path in (homepage, privacy, terms, site / "styles.css", published, headers):
+    for path in (homepage, privacy, terms, site / "styles.css", published_editor, published_week, headers):
         if not path.is_file():
             violations.append(f"missing artifact: {path.relative_to(site)}")
     if violations:
         return violations
-    if published.read_bytes() != (ROOT / "screenshots" / "flight-deck-calendar-week.png").read_bytes():
+    if published_editor.read_bytes() != (ROOT / "screenshots" / "flight-deck-calendar-editor.png").read_bytes():
+        violations.append("published editor image differs from the approved asset")
+    if published_week.read_bytes() != (ROOT / "screenshots" / "flight-deck-calendar-week.png").read_bytes():
         violations.append("published Week image differs from the approved asset")
     actual_files = {path.relative_to(site) for path in site.rglob("*") if path.is_file()}
     unexpected = sorted(actual_files - expected_files)
@@ -139,7 +143,7 @@ class ReleaseLayoutTests(unittest.TestCase):
             ROOT,
             release_root,
             ignore=shutil.ignore_patterns(
-                ".ai", ".git", ".private", ".superpowers", "__pycache__", "*.pyc"
+                ".ai", ".git", ".private", ".quality", ".superpowers", "__pycache__", "*.pyc"
             ),
         )
         for test_module in (release_root / "tests").glob("test_*.py"):
@@ -315,7 +319,7 @@ class ReleaseLayoutTests(unittest.TestCase):
                 ROOT,
                 release_root,
                 ignore=shutil.ignore_patterns(
-                    ".git", ".private", ".superpowers", "__pycache__", "*.pyc"
+                    ".git", ".private", ".quality", ".superpowers", "__pycache__", "*.pyc"
                 ),
             )
             for test_module in ("test_docs.py", "test_release_layout.py"):
@@ -349,7 +353,7 @@ class ReleaseLayoutTests(unittest.TestCase):
                 ROOT,
                 release_root,
                 ignore=shutil.ignore_patterns(
-                    ".git", ".private", ".superpowers", "__pycache__", "*.pyc"
+                    ".git", ".private", ".quality", ".superpowers", "__pycache__", "*.pyc"
                 ),
             )
             for test_module in ("test_docs.py", "test_release_layout.py"):
@@ -392,6 +396,9 @@ class ReleaseLayoutTests(unittest.TestCase):
             "https://github.com/joryeugene/omarchy-calendar/security/advisories/new",
             policy,
         )
+        self.assertIn("current tagged release and the active development branch", policy)
+        self.assertNotIn("release-candidate", policy)
+        self.assertNotIn("After the repository is public", policy)
 
     def test_official_plugin_root_has_no_legacy_install_or_timer_tree(self):
         manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
@@ -433,6 +440,7 @@ class ReleaseLayoutTests(unittest.TestCase):
 
     def test_release_metadata_and_one_command_check_exist(self):
         required = (
+            "Justfile",
             "README.md",
             "LICENSE",
             "PRIVACY.md",
@@ -440,28 +448,189 @@ class ReleaseLayoutTests(unittest.TestCase):
             "TRADEMARKS.md",
             "pyproject.toml",
             "scripts/check",
+            "scripts/e2e",
+            "tests/e2e_helper.py",
+            "tests/e2e_native_helper",
+            "tests/e2e_panel_flow.qml",
             ".github/workflows/check.yml",
         )
         for path in required:
             self.assertTrue((ROOT / path).is_file(), path)
         self.assertTrue(os.access(ROOT / "scripts" / "check", os.X_OK))
+        self.assertTrue(os.access(ROOT / "scripts" / "e2e", os.X_OK))
         project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         self.assertIn('license = "GPL-3.0-or-later"', project)
         self.assertIn('name = "flight-deck-calendar"', project)
+        self.assertIn('Development Status :: 5 - Production/Stable', project)
+        self.assertNotIn('Development Status :: 3 - Alpha', project)
         self.assertNotIn('Environment :: X11 Applications :: Qt', project)
+
+    def test_justfile_delegates_to_the_guarded_e2e_runner(self):
+        justfile = (ROOT / "Justfile").read_text(encoding="utf-8")
+        runner = (ROOT / "scripts" / "e2e").read_text(encoding="utf-8")
+        mise = (ROOT / ".mise.toml").read_text(encoding="utf-8")
+
+        for recipe, command in (
+            ("check:", "./scripts/check"),
+            ("e2e:", "./scripts/e2e isolated"),
+            ("e2e-native:", "./scripts/e2e native"),
+            ("e2e-live:", "./scripts/e2e live"),
+            ("release:", "./scripts/e2e release"),
+        ):
+            self.assertIn(recipe, justfile)
+            self.assertIn(command, justfile)
+        self.assertNotIn("FLIGHT_DECK_NATIVE_E2E=1", justfile)
+        self.assertNotIn("FLIGHT_DECK_LIVE_WRITE_E2E=1", justfile)
+        self.assertIn('just = "1.40.0"', mise)
+        self.assertIn('node = "22"', mise)
+
+        for guard in (
+            "FLIGHT_DECK_NATIVE_E2E",
+            "FLIGHT_DECK_LIVE_WRITE_E2E",
+            "FLIGHT_DECK_GOOGLE_SOURCE_CALENDAR",
+            "FLIGHT_DECK_GOOGLE_DESTINATION_CALENDAR",
+            "FLIGHT_DECK_OUTLOOK_SOURCE_CALENDAR",
+            "FLIGHT_DECK_OUTLOOK_DESTINATION_CALENDAR",
+        ):
+            self.assertIn(guard, runner)
+        self.assertIn('mktemp -d "${TMPDIR:-/tmp}/flight-deck-e2e.', runner)
+        self.assertIn('demo seed --date 2026-09-03', runner)
+        self.assertIn("dbus-run-session", runner)
+        self.assertIn("gnome-keyring-daemon", runner)
+        self.assertIn("gnome-keyring-daemon --unlock --components=secrets", runner)
+        self.assertIn('live_browser_desktop=$(env -u BROWSER xdg-settings get default-web-browser)', runner)
+        self.assertIn('live_browser_exec=${FLIGHT_DECK_LIVE_BROWSER:-}', runner)
+        self.assertIn('live_browser_command=${live_browser_exec%% *}', runner)
+        self.assertIn('export BROWSER="$FD_LIVE_BROWSER"', runner)
+        self.assertIn("omarchy-keyboard-panel", runner)
+        self.assertIn("tesseract", runner)
+        self.assertIn("magick", runner)
+        self.assertIn('magick "$shot" -crop', runner)
+        self.assertIn('header_height=$((height * 30 / 100))', runner)
+        self.assertIn("poll_visible_text", runner)
+        self.assertIn('flight-deck-e2e-failure-$monitor.png', runner)
+        self.assertIn("poll_native_command", runner)
+        self.assertIn('grep -cF "\\"arguments\\":[\\"$command\\"" "$log"', runner)
+        self.assertIn("ocr_text", runner)
+        self.assertIn("ocr_regions", runner)
+        self.assertIn("hl.dsp.send_key_state", runner)
+        self.assertIn('native_send_key SHIFT slash', runner)
+        self.assertNotIn("wtype", runner)
+        self.assertIn(
+            'native_key "$monitor" g "$today_label"\n'
+            '    native_key "$monitor" h "$seed_label"\n'
+            '    poll_visible_text "$monitor" "ALL-DAY RELEASE"\n'
+            '    native_key "$monitor" t "$seed_label"\n'
+            '    for _ in {1..8}; do native_send_key "" k; done\n'
+            '    poll_visible_text "$monitor" "ALL-DAY RELEASE"\n'
+            '    previous=$(native_command_count enable-editing)\n'
+            '    native_key "$monitor" e "ACCOUNTS AND CALENDARS"\n'
+            '    native_send_key "" Return\n'
+            '    poll_native_command enable-editing "$previous"\n'
+            '    poll_visible_text "$monitor" "EDIT EVENT"',
+            runner,
+        )
+        self.assertNotIn('native_key "$monitor" l "$today_label"', runner)
+        self.assertIn('poll_visible_text "$monitor" "EVENT DETAILS"', runner)
+        self.assertIn('poll_visible_text "$monitor" "NEW N"', runner)
+        self.assertNotIn('poll_visible_text "$monitor" "FLIGHT DECK"', runner)
+        self.assertNotIn("screen_hash", runner)
+        self.assertNotIn("poll_visible_change", runner)
+        self.assertNotIn("poll_screen_settled", runner)
+        self.assertIn("restore_native_install", runner)
+        self.assertIn("omarchy-restart-shell", runner)
+        self.assertIn("flock -n 9", runner)
+        self.assertIn("calendar_cache_hash", runner)
+        self.assertIn("poll_sync_idle", runner)
+        self.assertIn("run_isolated() (", runner)
+        self.assertIn('package="$temporary_root/package"', runner)
+        self.assertIn('anonymous="$temporary_root/anonymous"', runner)
+        self.assertIn('git clone --quiet --no-local', runner)
+        self.assertIn('cp -a -- "$source" "$package"', runner)
+        self.assertIn('uv build --wheel --out-dir "$wheelhouse" "$package"', runner)
+        self.assertNotIn('uv build --wheel --out-dir "$wheelhouse" "$source"', runner)
+        self.assertIn("native_key \"$monitor\" d", runner)
+        self.assertIn(
+            'native_key "$monitor" h "$seed_label"\n'
+            '    for _ in {1..8}; do native_send_key "" k; done\n'
+            '    poll_visible_text "$monitor" "READ-ONLY DESIGN REVIEW"\n'
+            '    native_key "$monitor" j "WEEKLY REVIEW"\n'
+            '    native_key "$monitor" d "COPY EVENT"',
+            runner,
+        )
+        self.assertIn('focus_monitor "$monitor"', runner)
+        self.assertIn(
+            'focus_monitor "$monitor"\n'
+            '    omarchy-restart-shell\n'
+            '    poll_bar_ready "$monitor_count"\n'
+            '    focus_monitor "$monitor"',
+            runner,
+        )
+        self.assertIn("panel_monitor", runner)
+        self.assertIn('[[ $actual == "$monitor" ]]', runner)
+        self.assertIn("hl.dsp.focus({ monitor = '+1' })", runner)
+        self.assertIn('notifications dismiss "Kinetic voice blocked"', runner)
+        self.assertIn("hl.dsp.focus({ monitor = '+1' })", runner)
+        self.assertIn('native_combo "$monitor" shift l "$today_day"', runner)
+        self.assertIn('native_combo "$monitor" shift j "10:15"', runner)
+        self.assertIn('echo "PASS reversible installed two-monitor keyboard run plus Qt pointer interactions"', runner)
+        self.assertIn("tests/live_write_e2e.py", runner)
+        self.assertNotIn("live provider mutations remain blocked", runner)
+        self.assertNotRegex(runner, r"\bsleep\s+[1-9]")
+
+    def test_destructive_e2e_modes_fail_closed_without_explicit_flags(self):
+        environment = os.environ.copy()
+        environment.pop("FLIGHT_DECK_NATIVE_E2E", None)
+        environment.pop("FLIGHT_DECK_LIVE_WRITE_E2E", None)
+        for mode, expected in (
+            ("native", "FLIGHT_DECK_NATIVE_E2E=1"),
+            ("live", "FLIGHT_DECK_LIVE_WRITE_E2E=1"),
+        ):
+            result = subprocess.run(
+                [str(ROOT / "scripts" / "e2e"), mode],
+                cwd=ROOT,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 2, result.stdout)
+            self.assertIn(expected, result.stderr)
+
+    def test_one_command_check_runs_the_complete_qml_test_directory(self):
+        check = (ROOT / "scripts" / "check").read_text(encoding="utf-8")
+
+        self.assertIn('-input "$project_root/tests/qml"', check)
+        self.assertNotIn("tst_week_pointer.qml", check)
+        self.assertIn('qml_parser=$(command -v qmlformat', check)
+        self.assertIn('echo "PASS QML interactions"', check)
+
+    def test_ci_runs_every_supported_python_version(self):
+        workflow = (ROOT / ".github" / "workflows" / "check.yml").read_text(encoding="utf-8")
+
+        self.assertIn("matrix.python-version", workflow)
+        self.assertIn('python-version: ["3.11", "3.12"]', workflow)
+        for package in (
+            "qt6-declarative-dev-tools",
+            "qml6-module-qtquick",
+            "qml6-module-qtquick-window",
+            "qml6-module-qtqml-workerscript",
+            "qml6-module-qttest",
+        ):
+            self.assertIn(package, workflow)
 
     def test_release_version_is_consistent_across_public_surfaces(self):
         manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-        self.assertEqual(manifest["version"], "1.0.0")
-        self.assertEqual(project["project"]["version"], "1.0.0")
-        self.assertEqual(__version__, "1.0.0")
+        self.assertEqual(manifest["version"], "1.1.0")
+        self.assertEqual(project["project"]["version"], "1.1.0")
+        self.assertEqual(__version__, "1.1.0")
         self.assertNotIn(
             "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
             project["project"]["classifiers"],
         )
-        self.assertIn("Flight Deck Calendar  1.0.0", (ROOT / "SettingsView.qml").read_text(encoding="utf-8"))
+        self.assertIn("Flight Deck Calendar  1.1.0", (ROOT / "SettingsView.qml").read_text(encoding="utf-8"))
         self.assertNotIn("RC", (ROOT / "SettingsView.qml").read_text(encoding="utf-8"))
 
     def test_stable_release_requires_bundled_provider_registrations(self):

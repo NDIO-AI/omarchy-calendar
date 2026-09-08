@@ -2,6 +2,7 @@
   "value": [
     {
       "id": "outlook-event-1",
+      "changeKey": "outlook-change-1",
       "subject": "Mentor call",
       "isAllDay": false,
       "isCancelled": false,
@@ -9,7 +10,14 @@
       "end": {"dateTime": "2026-08-25T20:45:00", "timeZone": "UTC"},
       "bodyPreview": "Talk through the next milestone.",
       "location": {"displayName": "Remote"},
-      "organizer": {"emailAddress": {"name": "Mentor", "address": "mentor@outlook.example"}},
+      "organizer": {"emailAddress": {"name": "Person", "address": "person@outlook.example"}},
+      "attendees": [
+        {
+          "emailAddress": {"name": "Guest", "address": "guest@example.com"},
+          "status": {"response": "none", "time": "0001-01-01T00:00:00Z"},
+          "type": "required"
+        }
+      ],
       "onlineMeeting": {"joinUrl": "https://teams.microsoft.com/l/meetup-join/demo"},
       "webLink": "https://outlook.live.com/calendar/item/outlook-event-1",
       "showAs": "busy",
@@ -27,6 +35,7 @@
       "bodyPreview": "",
       "location": {"displayName": ""},
       "organizer": {"emailAddress": {"name": "", "address": ""}},
+      "attendees": [],
       "webLink": "https://outlook.live.com/calendar/item/outlook-all-day",
       "showAs": "free",
       "lastModifiedDateTime": "2026-08-20T12:00:00Z",

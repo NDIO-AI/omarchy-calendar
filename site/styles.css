@@ -246,6 +246,21 @@ h3 {
   border-top: 1px solid var(--line);
 }
 
+.workflow {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.65fr) minmax(0, 1.35fr);
+  gap: clamp(2rem, 6vw, 5rem);
+  align-items: center;
+}
+
+.workflow-copy > p:not(.eyebrow) {
+  color: var(--muted);
+}
+
+.workflow-product {
+  padding: clamp(0.3rem, 0.6vw, 0.5rem);
+}
+
 .install-copy > p {
   color: var(--muted);
 }
@@ -502,6 +517,10 @@ code {
   }
 
   .install {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workflow {
     grid-template-columns: minmax(0, 1fr);
   }
 

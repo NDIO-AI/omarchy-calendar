@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import json
+import io
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import date
 from pathlib import Path
 from unittest.mock import patch
@@ -12,13 +14,18 @@ from unittest.mock import patch
 import omarchy_calendar.settings as settings_module
 from omarchy_calendar.cache import CalendarStore
 from omarchy_calendar.cli import (
+    copy_meeting_url,
     disconnect_provider,
+    edit_account_id,
     import_google_desktop_app,
+    main,
     open_event_url,
+    read_stdin_json,
     reset_local_data,
     seed_demo,
     setup_status,
 )
+from omarchy_calendar.keyring import KeyringError
 from omarchy_calendar.models import ProviderHealth
 from omarchy_calendar.settings import ProviderSettings
 
@@ -79,14 +86,131 @@ class CalendarCliTests(unittest.TestCase):
         self.assertFalse(google["connected"])
         self.assertNotIn("client_id", google)
 
-    def test_public_cli_exposes_no_client_secret_configuration(self):
+    def test_public_cli_exposes_stdin_mutations_without_client_secret_configuration(self):
         result = self.run_cli("--help")
         self.assertEqual(result.returncode, 0, result.stderr)
-        for forbidden in (
-            "configure-client-secret", "open-provider-setup",
-            "create-event", "update-event", "delete-event",
-        ):
+        for forbidden in ("configure-client-secret", "open-provider-setup"):
             self.assertNotIn(forbidden, result.stdout)
+        for command in (
+            "enable-editing", "create-event", "update-event", "copy-event", "delete-event",
+        ):
+            self.assertIn(command, result.stdout)
+        create_help = self.run_cli("create-event", "--help")
+        for private_field in ("title", "notes", "location", "calendar-id"):
+            self.assertNotIn(private_field, create_help.stdout)
+
+    def test_edit_upgrade_resolves_one_existing_account_or_requires_a_choice(self):
+        store = CalendarStore(self.state / "edit-account.db")
+        store.set_health(ProviderHealth.ok("google", "account-a", "2026-08-25T14:00:00Z"))
+
+        self.assertEqual(edit_account_id(store, "google", ""), "account-a")
+        self.assertEqual(edit_account_id(store, "google", "account-a"), "account-a")
+
+        store.set_health(ProviderHealth.ok("google", "account-b", "2026-08-25T14:00:00Z"))
+        with self.assertRaisesRegex(ValueError, "--account"):
+            edit_account_id(store, "google", "")
+        store.close()
+
+    def test_mutation_json_is_bounded_and_must_be_an_object(self):
+        self.assertEqual(read_stdin_json(io.StringIO('{"title":"Review"}')), {"title": "Review"})
+        for raw, message in (
+            ("[]", "object"),
+            ("not json", "valid JSON"),
+            ("x" * 70000, "too large"),
+        ):
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                read_stdin_json(io.StringIO(raw))
+
+    def test_write_permission_errors_are_reported_without_a_traceback(self):
+        payload = {
+            "request_id": "2a08dcba-61ef-48af-af54-525832d29d3d",
+            "calendar_key": "a" * 64,
+            "title": "Review",
+            "day": "2026-09-02",
+            "start": "10:00",
+            "end": "11:00",
+            "all_day": False,
+            "location": "",
+            "notes": "",
+            "recurrence": {"frequency": "none", "weekdays": [], "end": "never"},
+            "online_meeting": "none",
+            "source_uid": "",
+            "scope": "single",
+        }
+        error = io.StringIO()
+        with (
+            patch("omarchy_calendar.cli.MutationService") as service,
+            patch("omarchy_calendar.cli.read_stdin_json", return_value=payload),
+            patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state)}),
+            redirect_stderr(error),
+        ):
+            service.return_value.create.side_effect = PermissionError("Read and edit permission is required")
+            result = main(["create-event"])
+
+        self.assertEqual(result, 2)
+        self.assertIn("Read and edit permission is required", error.getvalue())
+        self.assertNotIn("Traceback", error.getvalue())
+
+    def test_delete_event_requires_explicit_stdin_confirmation(self):
+        error = io.StringIO()
+        with (
+            patch("omarchy_calendar.cli.MutationService") as service,
+            patch("omarchy_calendar.cli.read_stdin_json", return_value={"uid": "event"}),
+            patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state)}),
+            redirect_stderr(error),
+        ):
+            result = main(["delete-event"])
+
+        self.assertEqual(result, 2)
+        self.assertIn("explicit confirmation", error.getvalue())
+        service.return_value.delete_event.assert_not_called()
+
+        output = io.StringIO()
+        with (
+            patch("omarchy_calendar.cli.MutationService") as service,
+            patch("omarchy_calendar.cli.read_stdin_json", return_value={
+                "uid": "event",
+                "confirmed": True,
+                "scope": "series",
+                "expected_revision": "event-revision",
+                "series_revision": "series-revision",
+                "series_transfer_guard": True,
+            }),
+            patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state)}),
+            redirect_stdout(output),
+        ):
+            service.return_value.delete_event.return_value = {"deleted": True}
+            result = main(["delete-event"])
+
+        self.assertEqual(result, 0)
+        service.return_value.delete_event.assert_called_once_with(
+            "event",
+            scope="series",
+            expected_revision="event-revision",
+            series_revision="series-revision",
+            series_transfer_guard=True,
+        )
+
+        with (
+            patch("omarchy_calendar.cli.MutationService") as service,
+            patch("omarchy_calendar.cli.read_stdin_json", return_value={
+                "uid": "event",
+                "confirmed": True,
+            }),
+            patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state)}),
+            redirect_stdout(io.StringIO()),
+        ):
+            service.return_value.delete_event.return_value = {"deleted": True}
+            result = main(["delete-event"])
+
+        self.assertEqual(result, 0)
+        service.return_value.delete_event.assert_called_once_with(
+            "event",
+            scope="single",
+            expected_revision="",
+            series_revision="",
+            series_transfer_guard=False,
+        )
 
     def test_configure_client_and_setup_status_separate_configuration_from_connection(self):
         configured = self.run_cli(
@@ -171,6 +295,86 @@ class CalendarCliTests(unittest.TestCase):
         self.assertNotIn(bundled_values["google"], serialized)
         self.assertNotIn(bundled_values["microsoft"], serialized)
         self.assertNotIn(bundled_credential, serialized)
+
+    def test_setup_status_reports_edit_access_without_exposing_tokens(self):
+        class FakeKeyring:
+            def get_app_credential(self, _provider):
+                return "desktop-credential"
+
+            def get(self, provider, account_id):
+                self.requested = (provider, account_id)
+                return {
+                    "access_token": "private-token",
+                    "access_mode": "edit",
+                    "scope": "https://www.googleapis.com/auth/calendar.events.owned",
+                }
+
+        keyring = FakeKeyring()
+        with CalendarStore(self.state / "omarchy-calendar" / "calendar.db") as store:
+            store.set_health(ProviderHealth.ok("google", "account", "2026-09-02T12:00:00Z"))
+            status = setup_status(
+                store, ProviderSettings(google_client_id="local.apps.googleusercontent.com"), keyring,
+            )
+
+        google = next(item for item in status["providers"] if item["provider"] == "google")
+        self.assertTrue(google["editing"])
+        self.assertEqual(google["edit_accounts"], 1)
+        self.assertEqual(google["editing_account_ids"], ["account"])
+        self.assertEqual(keyring.requested, ("google", "account"))
+        self.assertNotIn("private-token", json.dumps(status))
+
+    def test_setup_status_keeps_connected_accounts_read_only_when_keyring_is_unavailable(self):
+        class UnavailableKeyring:
+            def get(self, _provider, _account_id):
+                raise KeyringError("Secret Service client is not installed")
+
+        with CalendarStore(self.state / "omarchy-calendar" / "calendar.db") as store:
+            store.set_health(ProviderHealth.ok(
+                "microsoft", "account", "2026-08-25T12:00:00Z"
+            ))
+            status = setup_status(store, ProviderSettings(), UnavailableKeyring())
+
+        outlook = next(
+            item for item in status["providers"] if item["provider"] == "microsoft"
+        )
+        self.assertTrue(outlook["connected"])
+        self.assertFalse(outlook["editing"])
+        self.assertEqual(outlook["edit_accounts"], 0)
+
+    def test_setup_status_does_not_trust_access_mode_without_exact_write_scope(self):
+        class FakeKeyring:
+            def get_app_credential(self, _provider):
+                return "desktop-credential"
+
+            def get(self, provider, _account_id):
+                return {
+                    "access_token": "private-token",
+                    "access_mode": "edit",
+                    "scope": (
+                        "https://www.googleapis.com/auth/calendar.events.readonly"
+                        if provider == "google" else "Calendars.Read"
+                    ),
+                }
+
+        with CalendarStore(self.state / "omarchy-calendar" / "calendar.db") as store:
+            store.set_health(ProviderHealth.ok(
+                "google", "google-account", "2026-09-02T12:00:00Z"
+            ))
+            store.set_health(ProviderHealth.ok(
+                "microsoft", "outlook-account", "2026-09-02T12:00:00Z"
+            ))
+            status = setup_status(
+                store,
+                ProviderSettings(
+                    google_client_id="local.apps.googleusercontent.com",
+                    microsoft_client_id="11111111-2222-3333-4444-555555555555",
+                ),
+                FakeKeyring(),
+            )
+
+        for provider in status["providers"]:
+            self.assertFalse(provider["editing"], provider["provider"])
+            self.assertEqual(provider["editing_account_ids"], [])
 
     def test_setup_status_never_completes_a_local_google_id_with_bundled_credential(self):
         class MissingLocalCredentialKeyring:
@@ -340,6 +544,43 @@ class CalendarCliTests(unittest.TestCase):
         self.assertEqual(calls[0][0][0], "test-browser")
         self.assertTrue(calls[0][0][1].startswith("https://"))
         self.assertNotIn("shell", calls[0][1])
+        store.close()
+
+    def test_copy_meeting_uses_wl_copy_stdin_without_a_shell(self):
+        store = CalendarStore(self.state / "copy-test.db")
+        seed_demo(store, date(2026, 8, 25))
+        selected = next(
+            item for item in store.view("2026-08-25T00:00:00-05:00", "2026-08-26T00:00:00-05:00")["events"]
+            if item["meeting_url"]
+        )
+        calls = []
+
+        result = copy_meeting_url(
+            store, selected["uid"], command="test-wl-copy",
+            runner=lambda argv, **kwargs: calls.append((argv, kwargs)),
+        )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(calls[0][0], ["test-wl-copy"])
+        self.assertEqual(calls[0][1]["input"], selected["meeting_url"])
+        self.assertTrue(calls[0][1]["text"])
+        self.assertNotIn("shell", calls[0][1])
+        store.close()
+
+    def test_copy_meeting_reports_clipboard_failure(self):
+        store = CalendarStore(self.state / "copy-failure.db")
+        seed_demo(store, date(2026, 8, 25))
+        selected = next(
+            item for item in store.view("2026-08-25T00:00:00-05:00", "2026-08-26T00:00:00-05:00")["events"]
+            if item["meeting_url"]
+        )
+
+        result = copy_meeting_url(
+            store, selected["uid"], command="test-wl-copy",
+            runner=lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1),
+        )
+
+        self.assertEqual(result, 5)
         store.close()
 
     def test_reset_local_data_clears_cache_tokens_and_provider_overrides(self):

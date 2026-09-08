@@ -44,6 +44,18 @@ class OAuthTests(unittest.TestCase):
         self.assertEqual(query["code_challenge_method"], ["S256"])
         self.assertEqual(query["access_type"], ["offline"])
 
+    def test_google_edit_authorization_adds_only_owned_event_scope(self):
+        url = authorization_url(
+            "google", "google-public-id", "http://127.0.0.1:8123/callback",
+            OAuthFlow.for_test(verifier="b" * 64, state="google-edit-state"),
+            access="edit",
+        )
+        scopes = set(parse_qs(urlparse(url).query)["scope"][0].split())
+
+        self.assertIn("https://www.googleapis.com/auth/calendar.events.owned", scopes)
+        self.assertIn("https://www.googleapis.com/auth/calendar.events.readonly", scopes)
+        self.assertNotIn("https://www.googleapis.com/auth/calendar", scopes)
+
     def test_microsoft_authorization_supports_personal_accounts_without_write_scope(self):
         url = authorization_url(
             "microsoft", "microsoft-public-id", "http://127.0.0.1:8123/callback",
@@ -59,6 +71,18 @@ class OAuthTests(unittest.TestCase):
         self.assertNotIn("ReadWrite", query["scope"][0])
         self.assertNotIn("Mail.", query["scope"][0])
         self.assertEqual(query["code_challenge_method"], ["S256"])
+
+    def test_microsoft_edit_authorization_adds_calendars_readwrite(self):
+        url = authorization_url(
+            "microsoft", "microsoft-public-id", "http://localhost:8123",
+            OAuthFlow.for_test(verifier="c" * 64, state="microsoft-edit-state"),
+            access="edit",
+        )
+        scopes = set(parse_qs(urlparse(url).query)["scope"][0].split())
+
+        self.assertIn("Calendars.ReadWrite", scopes)
+        self.assertIn("Calendars.Read", scopes)
+        self.assertNotIn("Mail.ReadWrite", scopes)
 
     def test_loopback_receiver_accepts_one_valid_callback(self):
         flow = OAuthFlow.for_test(verifier="d" * 64, state="loopback-state")

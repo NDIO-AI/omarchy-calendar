@@ -163,6 +163,20 @@ class CalendarStoreTests(unittest.TestCase):
         self.assertIsNone(self.store.get_event(google.uid))
         self.assertIsNotNone(self.store.get_event(outlook.uid))
 
+    def test_series_removal_is_scoped_to_the_source_calendar(self):
+        first = replace(event("google:a:c:occurrence"), recurrence_id="shared-series")
+        second = replace(
+            event("microsoft:b:c:occurrence", provider="microsoft", account="b"),
+            recurrence_id="shared-series",
+        )
+        self.store.upsert_event(first)
+        self.store.upsert_event(second)
+
+        self.store.remove_event(first.uid, series_id="shared-series")
+
+        self.assertIsNone(self.store.get_event(first.uid))
+        self.assertIsNotNone(self.store.get_event(second.uid))
+
     def test_clear_all_removes_events_and_provider_health(self):
         window = ("2026-08-25T00:00:00Z", "2026-08-26T00:00:00Z")
         self.store.replace_window(

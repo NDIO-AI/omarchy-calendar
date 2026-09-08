@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -56,9 +57,17 @@ class SyncEngine:
                     raise HttpError(401, "Calendar credentials are missing")
                 token = self._refresh_if_needed(name, account_id, token)
                 start, end = self.window()
-                live_account, events = self.providers[name].fetch_window(str(token["access_token"]), start, end)
+                fetched = self.providers[name].fetch_window(str(token["access_token"]), start, end)
+                if len(fetched) == 3:
+                    live_account, calendars, events = fetched
+                else:
+                    live_account, events = fetched
+                    calendars = None
                 health = ProviderHealth.ok(name, live_account.account_id, self.now().isoformat())
-                self.store.replace_window(name, live_account.account_id, start, end, events, health)
+                self.store.replace_window(
+                    name, live_account.account_id, start, end, events, health,
+                    calendars=calendars,
+                )
                 result["synced"] = int(result["synced"]) + 1
                 result["accounts"].append({"provider": name, "account_id": live_account.account_id, "events": len(events)})
             except HttpError as error:
@@ -98,7 +107,16 @@ class SyncEngine:
             if not app_credential:
                 raise HttpError(401, "Google Desktop credentials are not configured")
             form["client_secret"] = app_credential
-        response = self.http.post_token(TOKEN_ENDPOINTS[provider], form)
+        try:
+            response = self.http.post_token(TOKEN_ENDPOINTS[provider], form)
+        except HttpError as error:
+            try:
+                oauth_error = json.loads(error.message).get("error")
+            except (AttributeError, json.JSONDecodeError):
+                oauth_error = ""
+            if error.status == 400 and oauth_error == "invalid_grant":
+                raise HttpError(401, "Calendar credentials need browser reconnection") from error
+            raise
         merged = dict(token)
         merged.update(response)
         merged["refresh_token"] = str(response.get("refresh_token") or refresh_token)

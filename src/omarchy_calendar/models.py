@@ -5,6 +5,24 @@ from dataclasses import asdict, dataclass
 
 
 @dataclass(frozen=True, slots=True)
+class Calendar:
+    provider: str
+    account_id: str
+    account_label: str
+    calendar_id: str
+    name: str
+    color: str
+    timezone: str
+    writable: bool
+    owned: bool
+    meeting_providers: tuple[str, ...] = ()
+    sync_enabled: bool = True
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
 class Event:
     uid: str
     provider: str
@@ -24,6 +42,19 @@ class Event:
     meeting_url: str
     provider_url: str
     updated: str
+    provider_event_id: str = ""
+    revision: str = ""
+    timezone: str = ""
+    recurrence_id: str = ""
+    recurrence: tuple[str, ...] = ()
+    event_type: str = "single"
+    organizer_owned: bool = False
+    start_day: str = ""
+    end_day: str = ""
+    series_revision: str = ""
+    series_start: str = ""
+    series_end: str = ""
+    has_attendees: bool = False
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
