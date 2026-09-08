@@ -110,7 +110,11 @@ TestCase {
 
     function nextSibling(item) {
         var siblings = item.parent.children;
-        return siblings[siblings.indexOf(item) + 1];
+        for (var index = 0; index < siblings.length - 1; index++) {
+            if (siblings[index] === item)
+                return siblings[index + 1];
+        }
+        return null;
     }
 
     function editorY(item) {
