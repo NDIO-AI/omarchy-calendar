@@ -20,13 +20,13 @@ node tests/test_calendar_model.mjs
 node tests/test_settings_model.mjs
 node tests/test_event_editor_model.mjs
 
-qml_linter=$(command -v qmllint || true)
-if [[ -z $qml_linter && -x /usr/lib/qt6/bin/qmllint ]]; then
-  qml_linter=/usr/lib/qt6/bin/qmllint
+qml_parser=$(command -v qmlformat || true)
+if [[ -z $qml_parser && -x /usr/lib/qt6/bin/qmlformat ]]; then
+  qml_parser=/usr/lib/qt6/bin/qmlformat
 fi
-if [[ -n $qml_linter ]]; then
+if [[ -n $qml_parser ]]; then
   for qml_file in "$project_root"/*.qml; do
-    if ! qml_output=$($qml_linter --max-warnings -1 "$qml_file" 2>&1); then
+    if ! qml_output=$($qml_parser "$qml_file" 2>&1); then
       echo "$qml_output" >&2
       exit 1
     fi

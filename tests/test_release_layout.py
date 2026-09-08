@@ -602,7 +602,7 @@ class ReleaseLayoutTests(unittest.TestCase):
 
         self.assertIn('-input "$project_root/tests/qml"', check)
         self.assertNotIn("tst_week_pointer.qml", check)
-        self.assertIn('--max-warnings -1 "$qml_file"', check)
+        self.assertIn('qml_parser=$(command -v qmlformat', check)
         self.assertIn('echo "PASS QML interactions"', check)
 
     def test_ci_runs_every_supported_python_version(self):
