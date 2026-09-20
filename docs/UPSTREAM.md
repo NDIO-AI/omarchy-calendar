@@ -59,16 +59,25 @@ git -C "$dir" fetch --quiet origin HEAD
 git -C "$dir" merge --ff-only FETCH_HEAD
 ```
 
-A fast-forward only succeeds when local `HEAD` is an ancestor of the fetched
-commit. Because these fixes are commits on top of `origin/main`, the merge is
-refused and the script prints:
+The result depends on whether upstream `main` moved:
 
-```
-omarchy-plugin-update: cannot fast-forward '<id>'; you have local changes
-```
+- **Upstream unchanged since the base commit.** `FETCH_HEAD` is an ancestor of
+  the local `HEAD`, so the fast-forward is a no-op and the script prints
+  `Updated '<id>'.` The fixes are untouched.
+- **Upstream advanced.** `FETCH_HEAD` is not an ancestor of the local `HEAD`,
+  so the fast-forward is refused and the script prints:
 
-So an update can never silently overwrite the fixes. The trade-off is that
-upstream updates are blocked until the fixes are merged upstream or rebased.
+  ```
+  omarchy-plugin-update: cannot fast-forward '<id>'; you have local changes
+  ```
+
+Either way the fixes are never overwritten. The second case is the signal that
+upstream moved; rebase or merge deliberately (below) to take its changes.
+
+The script always calls `omarchy-shell shell rescanPlugins` after it reports an
+update. That reload can exceed the IPC timeout and print
+`omarchy-shell is not responding`; the shell is fine and `omarchy-shell shell
+ping` returns `ok` immediately after.
 
 ## Keeping the fixes across updates
 
