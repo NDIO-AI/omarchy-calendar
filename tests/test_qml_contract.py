@@ -35,7 +35,7 @@ class QmlContractTests(unittest.TestCase):
     def test_singleton_service_runs_the_bundled_helper_without_a_shell(self):
         service = self.text("Service.qml")
         self.assertIn('property string helperPath:', service)
-        self.assertIn('manifest.__sourceDir', service)
+        self.assertIn('Qt.resolvedUrl("calendarctl")', service)
         self.assertIn('[root.helperPath, "sync"]', service)
         self.assertNotIn('command = ["sh"', service)
         self.assertIn("property bool syncing", service)
@@ -280,7 +280,7 @@ class QmlContractTests(unittest.TestCase):
         settings = self.text("SettingsView.qml")
         setup = self.text("SetupView.qml")
         for label in (
-            "This build has no bundled Google registration", "Choose Google Desktop JSON",
+            "This build has no bundled Google registration", "Import Google Desktop credentials JSON (advanced)",
             "WHAT FLIGHT DECK REQUESTS", "Connect in browser", "No hosted backend",
             "Flight Deck's bundled registration is ready",
         ):
@@ -757,6 +757,31 @@ class QmlContractTests(unittest.TestCase):
             "&& !root.showSetup && !root.showEditor",
             panel,
         )
+
+    def test_host_bar_api_is_called_through_its_scoped_setter(self):
+        panel = self.text("Panel.qml")
+        setup = self.text("SetupView.qml")
+        self.assertIn('typeof root.bar.setCenterHoverRevealSuppressed === "function"', panel)
+        self.assertIn("root.bar.setCenterHoverRevealSuppressed(value)", panel)
+        self.assertIn("options: FileDialog.DontUseNativeDialog", setup)
+
+    def test_google_setup_prefers_browser_auth_and_keeps_the_json_import(self):
+        setup = self.text("SetupView.qml")
+        self.assertIn('"Connect in browser"', setup)
+        self.assertIn("Import Google Desktop credentials JSON (advanced)", setup)
+        self.assertIn('visible: root.provider === "google"', setup)
+        self.assertIn("googleCredentialsDialog.open()", setup)
+
+    def test_empty_state_recognizes_connected_accounts_and_can_be_closed(self):
+        panel = self.text("Panel.qml")
+        settings = self.text("SettingsView.qml")
+        self.assertIn("connectedAccountCount", panel)
+        self.assertIn("hasConnectedAccount", panel)
+        self.assertIn('"NO EVENTS IN THIS PERIOD"', panel)
+        self.assertIn('root.hasConnectedAccount ? "c  Add account"', panel)
+        self.assertIn("r  Refresh providers", panel)
+        self.assertIn('objectName: "emptyStateClose"', panel)
+        self.assertIn('modelData.kind === "add" ? "Add account"', settings)
 
 
 if __name__ == "__main__":

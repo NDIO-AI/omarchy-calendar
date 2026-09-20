@@ -112,6 +112,16 @@ Panel {
     readonly property string contentFontFamily: bar ? bar.fontFamily : Style.font.family
     readonly property var events: CalendarModel.visibleCalendarEvents(cachedEvents, previewSettings.hiddenCalendars)
     readonly property bool filteredEmpty: cachedEvents.length > 0 && events.length === 0
+    readonly property int connectedAccountCount: {
+        var total = 0;
+        for (var i = 0; i < setupProviders.length; i++) {
+            var state = setupProviders[i];
+            if (state && state.connected)
+                total += Math.max(1, Number(state.accounts || 0));
+        }
+        return total;
+    }
+    readonly property bool hasConnectedAccount: connectedAccountCount > 0
     readonly property var dayEvents: CalendarModel.eventsForDay(events, cursorDate)
     readonly property var weekEvents: CalendarModel.eventsForWeek(events, cursorDate)
     readonly property var visibleEvents: activeTab === "today" ? dayEvents : weekEvents
@@ -166,7 +176,11 @@ Panel {
     function refresh() { root.loadView(); }
     function closeForPopoutSwitch() { root.close(); }
     function setCenterHoverRevealSuppressed(value) {
-        if (root.bar && "centerHoverRevealSuppressed" in root.bar)
+        if (!root.bar)
+            return;
+        if (typeof root.bar.setCenterHoverRevealSuppressed === "function")
+            root.bar.setCenterHoverRevealSuppressed(value);
+        else if ("centerHoverRevealSuppressed" in root.bar)
             root.bar.centerHoverRevealSuppressed = value;
     }
     function switchPanel(direction) {
@@ -1400,18 +1414,44 @@ Panel {
                             visible: !root.loading && root.events.length === 0 && !root.showSettings && !root.showSetup && !root.showEditor
                             anchors.centerIn: parent
                             width: Style.space(560)
-                            height: Style.space(240)
+                            height: Style.space(root.hasConnectedAccount && root.errorText === "" ? 272 : 240)
                             radius: Style.space(12)
                             color: root.palette.surface
                             border.color: root.errorText !== "" ? root.palette.urgent : root.palette.border
                             border.width: 1
+                            Rectangle {
+                                objectName: "emptyStateClose"
+                                width: Style.space(30)
+                                height: Style.space(30)
+                                radius: Style.space(6)
+                                anchors.top: parent.top
+                                anchors.right: parent.right
+                                anchors.topMargin: Style.space(12)
+                                anchors.rightMargin: Style.space(12)
+                                color: "transparent"
+                                border.color: root.palette.border
+                                border.width: 1
+                                Text {
+                                    textFormat: Text.PlainText
+                                    anchors.centerIn: parent
+                                    text: "X"
+                                    color: root.palette.muted
+                                    font.family: root.contentFontFamily
+                                    font.pixelSize: Style.font.caption * root.textScale
+                                    font.bold: true
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    onClicked: root.close()
+                                }
+                            }
                             Column {
                                 anchors.fill: parent
                                 anchors.margins: Style.space(22)
                                 spacing: Style.space(14)
                                 Text {
                                     textFormat: Text.PlainText
-                                    text: root.errorText !== "" ? "CALENDAR UNAVAILABLE" : root.filteredEmpty ? "NO VISIBLE EVENTS" : "YOUR CALENDAR COCKPIT IS READY"
+                                    text: root.errorText !== "" ? "CALENDAR UNAVAILABLE" : root.filteredEmpty ? "NO VISIBLE EVENTS" : root.hasConnectedAccount ? "NO EVENTS IN THIS PERIOD" : "YOUR CALENDAR COCKPIT IS READY"
                                     color: root.errorText !== "" ? root.palette.urgent : root.palette.accent
                                     font.family: root.contentFontFamily
                                     font.pixelSize: Style.font.title * root.textScale
@@ -1420,7 +1460,7 @@ Panel {
                                 Text {
                                     textFormat: Text.PlainText
                                     width: parent.width
-                                    text: root.errorText !== "" ? root.errorText : root.filteredEmpty ? "Every cached calendar in this period is hidden. Open Calendar settings to show one or more." : "Connect Google Calendar or Outlook in Settings. Read-only access is the default."
+                                    text: root.errorText !== "" ? root.errorText : root.filteredEmpty ? "Every cached calendar in this period is hidden. Open Calendar settings to show one or more." : root.hasConnectedAccount ? String(root.connectedAccountCount) + (root.connectedAccountCount === 1 ? " account is connected. There are no events in this period. Use [ and ] to change it, or add another account." : " accounts are connected. There are no events in this period. Use [ and ] to change it, or add another account.") : "Connect Google Calendar or Outlook in Settings. Read-only access is the default."
                                     color: root.palette.foreground
                                     font.family: root.contentFontFamily
                                     font.pixelSize: Style.font.bodySmall * root.textScale
@@ -1434,7 +1474,7 @@ Panel {
                                     Text {
                                         textFormat: Text.PlainText
                                         anchors.centerIn: parent
-                                        text: root.errorText !== "" ? "r  Try again" : root.filteredEmpty ? "c  Calendar visibility" : "c  Connect calendars"
+                                        text: root.errorText !== "" ? "r  Try again" : root.filteredEmpty ? "c  Calendar visibility" : root.hasConnectedAccount ? "c  Add account" : "c  Connect calendars"
                                         color: root.palette.background
                                         font.family: root.contentFontFamily
                                         font.pixelSize: Style.font.bodySmall * root.textScale
@@ -1455,7 +1495,7 @@ Panel {
                                     Text {
                                         textFormat: Text.PlainText
                                         anchors.centerIn: parent
-                                        text: root.errorText !== "" ? "c  Calendar settings" : "Load fictional demo data"
+                                        text: root.errorText !== "" ? "c  Calendar settings" : root.hasConnectedAccount ? "r  Refresh providers" : "Load fictional demo data"
                                         color: root.palette.foreground
                                         font.family: root.contentFontFamily
                                         font.pixelSize: Style.font.caption * root.textScale
@@ -1463,7 +1503,7 @@ Panel {
                                     }
                                     MouseArea {
                                         anchors.fill: parent
-                                        onClicked: root.errorText !== "" ? root.openSettings(0) : root.seedDemo()
+                                        onClicked: root.errorText !== "" ? root.openSettings(0) : root.hasConnectedAccount ? root.refreshProviders() : root.seedDemo()
                                     }
                                 }
                             }
