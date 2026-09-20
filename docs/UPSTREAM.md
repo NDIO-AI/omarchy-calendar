@@ -1,10 +1,11 @@
 # Omarchy compatibility and update survival
 
 Flight Deck Calendar v1.1.0 targets an older Omarchy shell. Current Omarchy
-(4.x, Qt 6.11) changed two host APIs and hardened a third path that the plugin
-relied on. The fixes below are required for the plugin to open, load events, and
-authenticate. This document is both the change log for a pull request and the
-maintenance guide for keeping the fixes while `omarchy plugin update` runs.
+(4.x, Qt 6.11) changed host APIs the plugin relied on, and the setup flow needed
+two behavior changes: Google must authenticate in the browser, and a provider
+must be able to hold more than one account. This document records every change,
+the symptom and root cause behind it, and how the fixes survive
+`omarchy plugin update`. It doubles as the change log for a pull request.
 
 ## What was broken and why
 
