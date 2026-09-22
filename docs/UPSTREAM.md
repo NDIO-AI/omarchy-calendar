@@ -48,6 +48,12 @@ Upstream issue: <https://github.com/joryeugene/omarchy-calendar/issues/4>.
   - `open_system_browser` prefers `OMARCHY_CALENDAR_BROWSER_COMMAND`, then
     `omarchy-launch-browser` (which focuses the window), then `xdg-open`, then
     `webbrowser.open`. The browser is spawned detached.
+- `Panel.qml` header and `SettingsView.qml`
+  - The header is now four matching buttons: Today, Week, New, and Settings.
+    The sync-status text, Refresh, and Help actions are gone from it.
+  - Help moved into the Settings sidebar as a "Help" section showing the same
+    keyboard map. Every shortcut is unchanged: `r` still refreshes, `?` still
+    toggles help, `s` still opens Settings, `n` still creates.
 - Tests cover the host-setter call, the resolved helper path, the browser
   launcher chain, the Google browser/JSON split, the add-account action, the
   connected empty state, and the `select_account` prompt.

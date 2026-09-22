@@ -30,7 +30,7 @@ Rectangle {
   signal disconnectRequested(string provider, string accountId)
   signal resetRequested()
 
-  readonly property var sections: ["Accounts and Calendars", "Appearance", "Preferences", "About and Privacy"]
+  readonly property var sections: ["Accounts and Calendars", "Appearance", "Preferences", "About and Privacy", "Help"]
   readonly property var accountItems: SettingsModel.accountRows(providers, calendars, providerHealth)
   readonly property var accountActionItems: SettingsModel.accountActions(accountItems)
   readonly property var appearanceControls: [
@@ -770,6 +770,14 @@ Rectangle {
                 MouseArea { anchors.fill: parent; onClicked: root.resetRequested() }
               }
             }
+          }
+
+          HelpOverlay {
+            visible: root.sectionIndex === 4
+            anchors.fill: parent
+            palette: root.palette
+            fontFamily: root.fontFamily
+            textScale: root.textScale
           }
         }
 

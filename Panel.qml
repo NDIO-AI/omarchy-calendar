@@ -159,7 +159,9 @@ Panel {
             if (!root.opened)
                 return;
             root.setCenterHoverRevealSuppressed(true);
-            root.loadView();
+            // The panel stays loaded between summons and can outlive a day
+            // boundary, so always open on today rather than a stale cursor.
+            root.goCurrent();
             root.loadSetupStatus();
         });
     }
@@ -1170,20 +1172,33 @@ Panel {
                                 model: [
                                     {
                                         key: "today",
-                                        label: "t  Today"
+                                        label: "t  Today",
+                                        kind: "tab"
                                     },
                                     {
                                         key: "week",
-                                        label: "w  Week"
+                                        label: "w  Week",
+                                        kind: "tab"
+                                    },
+                                    {
+                                        key: "new",
+                                        label: "n  New",
+                                        kind: "new"
+                                    },
+                                    {
+                                        key: "settings",
+                                        label: "s  Settings",
+                                        kind: "settings"
                                     }
                                 ]
                                 Rectangle {
                                     required property var modelData
-                                    width: Style.space(108)
+                                    readonly property bool active: modelData.kind === "tab" ? root.activeTab === modelData.key : modelData.kind === "new" ? root.showEditor && root.editorMode === "create" : root.showSettings
+                                    width: Style.space(modelData.kind === "settings" ? 128 : 108)
                                     height: Style.space(34)
                                     radius: Style.space(6)
-                                    color: root.activeTab === modelData.key ? root.palette.accent : "transparent"
-                                    border.color: root.activeTab === modelData.key ? root.palette.accent : root.palette.border
+                                    color: active ? root.palette.accent : "transparent"
+                                    border.color: active ? root.palette.accent : root.palette.border
                                     border.width: 1
                                     Behavior on color {
                                         enabled: root.motionDuration > 0
@@ -1195,77 +1210,22 @@ Panel {
                                         textFormat: Text.PlainText
                                         anchors.centerIn: parent
                                         text: modelData.label
-                                        color: root.activeTab === modelData.key ? root.palette.background : root.palette.foreground
+                                        color: active ? root.palette.background : root.palette.foreground
                                         font.family: root.contentFontFamily
                                         font.pixelSize: Style.font.caption * root.textScale
                                         font.bold: true
                                     }
                                     MouseArea {
                                         anchors.fill: parent
-                                        onClicked: root.setTab(modelData.key)
+                                        onClicked: {
+                                            if (modelData.kind === "tab")
+                                                root.setTab(modelData.key);
+                                            else if (modelData.kind === "new")
+                                                root.beginCreate(root.selectedDay, 9 * 60);
+                                            else
+                                                root.openSettings(1);
+                                        }
                                     }
-                                }
-                            }
-                        }
-                        Row {
-                            anchors.right: parent.right
-                            anchors.rightMargin: Style.space(16)
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: Style.space(10)
-                            Text {
-                                textFormat: Text.PlainText
-                                text: root.updateStatus
-                                color: root.demoData ? "#e0af68" : root.syncing ? root.palette.accent : root.updateNeedsAttention ? root.palette.urgent : root.palette.muted
-                                font.family: root.contentFontFamily
-                                font.pixelSize: Style.font.caption * root.textScale
-                            }
-                            Text {
-                                textFormat: Text.PlainText
-                                text: "New  n"
-                                color: root.showEditor && root.editorMode === "create" ? root.palette.accent : root.palette.foreground
-                                font.family: root.contentFontFamily
-                                font.pixelSize: Style.font.caption * root.textScale
-                                font.bold: true
-                                MouseArea {
-                                    anchors.fill: parent
-                                    onClicked: root.beginCreate(root.selectedDay, 9 * 60)
-                                }
-                            }
-                            Text {
-                                textFormat: Text.PlainText
-                                text: "Refresh  r"
-                                color: root.syncing ? root.palette.muted : root.palette.foreground
-                                font.family: root.contentFontFamily
-                                font.pixelSize: Style.font.caption * root.textScale
-                                font.bold: true
-                                MouseArea {
-                                    anchors.fill: parent
-                                    enabled: !root.syncing
-                                    onClicked: root.refreshProviders()
-                                }
-                            }
-                            Text {
-                                textFormat: Text.PlainText
-                                text: "Settings  s"
-                                color: root.showSettings ? root.palette.accent : root.palette.foreground
-                                font.family: root.contentFontFamily
-                                font.pixelSize: Style.font.caption * root.textScale
-                                font.bold: true
-                                MouseArea {
-                                    anchors.fill: parent
-                                    onClicked: root.openSettings(1)
-                                }
-                            }
-                            Text {
-                                textFormat: Text.PlainText
-                                text: "Help  ?"
-                                color: root.showHelp ? root.palette.accent : root.palette.foreground
-                                font.family: root.contentFontFamily
-                                font.pixelSize: Style.font.caption * root.textScale
-                                font.bold: true
-                                MouseArea {
-                                    anchors.fill: parent
-                                    onClicked: root.showHelp = !root.showHelp
                                 }
                             }
                         }

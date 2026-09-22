@@ -105,12 +105,24 @@ class QmlContractTests(unittest.TestCase):
         self.assertIn('root.errorText !== "" ? "r  Try again"', panel)
         self.assertIn('root.errorText !== "" || root.filteredEmpty ? "c  Calendar settings"', panel)
 
-    def test_header_labels_actions_before_their_keyboard_hints(self):
+    def test_header_uses_button_labels_without_refresh_or_help(self):
         panel = self.text("Panel.qml")
-        for label in ('"Refresh  r"', '"Settings  s"', '"Help  ?"'):
+        for label in ('"t  Today"', '"w  Week"', '"n  New"', '"s  Settings"'):
             self.assertIn(label, panel)
-        for old_label in ('"r  Refresh"', '"s  Settings"', 'text: "?"'):
-            self.assertNotIn(old_label, panel)
+        for removed in ('"Refresh  r"', '"Help  ?"', '"New  n"', '"Settings  s"', "text: root.updateStatus"):
+            self.assertNotIn(removed, panel)
+
+    def test_help_lives_in_the_settings_sidebar(self):
+        settings = self.text("SettingsView.qml")
+        panel = self.text("Panel.qml")
+        self.assertIn('"About and Privacy", "Help"', settings)
+        self.assertIn("HelpOverlay", settings)
+        self.assertIn("visible: root.sectionIndex === 4", settings)
+        self.assertIn("root.showHelp = !root.showHelp", panel)
+
+    def test_opening_the_panel_returns_to_today(self):
+        panel = self.text("Panel.qml")
+        self.assertRegex(panel, r"function open\(\)[\s\S]*?root\.goCurrent\(\)")
 
     def test_panel_declares_complete_non_alt_keyboard_contract(self):
         panel = self.text("Panel.qml")
