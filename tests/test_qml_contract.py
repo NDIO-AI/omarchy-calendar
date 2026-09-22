@@ -124,6 +124,12 @@ class QmlContractTests(unittest.TestCase):
         panel = self.text("Panel.qml")
         self.assertRegex(panel, r"function open\(\)[\s\S]*?root\.goCurrent\(\)")
 
+    def test_today_control_returns_to_the_current_day(self):
+        panel = self.text("Panel.qml")
+        self.assertRegex(panel, r"function goToday\(\)[\s\S]*?activeTab = \"today\";[\s\S]*?root\.goCurrent\(\)")
+        self.assertIn('modelData.key === "today" ? root.goToday()', panel)
+        self.assertRegex(panel, r'text === "t"\)\s*root\.goToday\(\)')
+
     def test_panel_declares_complete_non_alt_keyboard_contract(self):
         panel = self.text("Panel.qml")
         for key in (

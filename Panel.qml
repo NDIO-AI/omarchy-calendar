@@ -342,6 +342,10 @@ Panel {
         pendingNow = true;
         loadView();
     }
+    function goToday() {
+        activeTab = "today";
+        goCurrent();
+    }
     function selectUid(uid, day) {
         selectedUid = String(uid || "");
         var event = CalendarModel.eventByUid(visibleEvents, selectedUid);
@@ -1108,7 +1112,7 @@ Panel {
                     return;
                 }
                 if (text === "t")
-                    root.setTab("today");
+                    root.goToday();
                 else if (text === "w")
                     root.setTab("week");
                 else if (text === "j")
@@ -1219,7 +1223,7 @@ Panel {
                                         anchors.fill: parent
                                         onClicked: {
                                             if (modelData.kind === "tab")
-                                                root.setTab(modelData.key);
+                                                modelData.key === "today" ? root.goToday() : root.setTab(modelData.key);
                                             else if (modelData.kind === "new")
                                                 root.beginCreate(root.selectedDay, 9 * 60);
                                             else
