@@ -778,10 +778,11 @@ class QmlContractTests(unittest.TestCase):
         self.assertIn("connectedAccountCount", panel)
         self.assertIn("hasConnectedAccount", panel)
         self.assertIn('"NO EVENTS IN THIS PERIOD"', panel)
-        self.assertIn('root.hasConnectedAccount ? "c  Add account"', panel)
+        self.assertIn('root.hasConnectedAccount ? "c  Calendar settings"', panel)
         self.assertIn("r  Refresh providers", panel)
         self.assertIn('objectName: "emptyStateClose"', panel)
         self.assertIn('modelData.kind === "add" ? "Add account"', settings)
+        self.assertNotIn("Add account", panel)
 
 
 if __name__ == "__main__":

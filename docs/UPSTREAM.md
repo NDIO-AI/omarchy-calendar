@@ -26,8 +26,10 @@ Upstream issue: <https://github.com/joryeugene/omarchy-calendar/issues/4>.
   - `setCenterHoverRevealSuppressed` calls the host method when present and
     falls back to the writable property on older builds.
   - The empty-state card counts connected accounts. With an account connected
-    it reads "NO EVENTS IN THIS PERIOD", offers "Add account" and
-    "Refresh providers", and has an `X` close button.
+    it reads "NO EVENTS IN THIS PERIOD", points to Calendar settings and
+    "Refresh providers", and has an `X` close button. Account management,
+    including adding an account, stays in Settings; the Today and Week views
+    never offer it.
 - `Service.qml`
   - `helperPath` is resolved from the component's own location with
     `Qt.resolvedUrl("calendarctl")`, independent of the injected manifest.

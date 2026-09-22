@@ -1460,7 +1460,7 @@ Panel {
                                 Text {
                                     textFormat: Text.PlainText
                                     width: parent.width
-                                    text: root.errorText !== "" ? root.errorText : root.filteredEmpty ? "Every cached calendar in this period is hidden. Open Calendar settings to show one or more." : root.hasConnectedAccount ? String(root.connectedAccountCount) + (root.connectedAccountCount === 1 ? " account is connected. There are no events in this period. Use [ and ] to change it, or add another account." : " accounts are connected. There are no events in this period. Use [ and ] to change it, or add another account.") : "Connect Google Calendar or Outlook in Settings. Read-only access is the default."
+                                    text: root.errorText !== "" ? root.errorText : root.filteredEmpty ? "Every cached calendar in this period is hidden. Open Calendar settings to show one or more." : root.hasConnectedAccount ? String(root.connectedAccountCount) + (root.connectedAccountCount === 1 ? " account is connected. There are no events in this period. Use [ and ] to change it." : " accounts are connected. There are no events in this period. Use [ and ] to change it.") : "Connect Google Calendar or Outlook in Settings. Read-only access is the default."
                                     color: root.palette.foreground
                                     font.family: root.contentFontFamily
                                     font.pixelSize: Style.font.bodySmall * root.textScale
@@ -1474,7 +1474,7 @@ Panel {
                                     Text {
                                         textFormat: Text.PlainText
                                         anchors.centerIn: parent
-                                        text: root.errorText !== "" ? "r  Try again" : root.filteredEmpty ? "c  Calendar visibility" : root.hasConnectedAccount ? "c  Add account" : "c  Connect calendars"
+                                        text: root.errorText !== "" ? "r  Try again" : root.filteredEmpty ? "c  Calendar visibility" : root.hasConnectedAccount ? "c  Calendar settings" : "c  Connect calendars"
                                         color: root.palette.background
                                         font.family: root.contentFontFamily
                                         font.pixelSize: Style.font.bodySmall * root.textScale
