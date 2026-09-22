@@ -16,7 +16,7 @@ the symptom and root cause behind it, and how the fixes survive
 | 3 | Browser did not come to the front for consent | The shell's environment has no `BROWSER`, so Python `webbrowser` fell back to `xdg-open`, which opens a tab but does not raise or focus the window. | `src/omarchy_calendar/auth_service.py` |
 | 4 | Google setup offered the credentials JSON instead of browser auth; native chooser could abort Quickshell | Setup treated a missing/not-yet-loaded bundled registration as "no registration" and opened a native GTK `FileDialog`, the GVFS/D-Bus path that can `SIGABRT` Quickshell. | `SetupView.qml` |
 | 5 | Only one Google account could be connected | Account actions only offered "Connect" when a provider had zero accounts, and Google's consent URL reused the single signed-in account. | `SettingsModel.js`, `SettingsView.qml`, `src/omarchy_calendar/oauth.py` |
-| 6 | The empty-state card looked like a modal that said "Connect Google Calendar" even when connected | The card keyed only off `events.length === 0`, not off whether an account was connected, and had no dismiss control. | `Panel.qml` |
+| 6 | A popup appeared over Today/Week ("Connect Google Calendar", later "NO EVENTS IN THIS PERIOD") whenever the period had no events | The card keyed only off `events.length === 0`, not off whether an account was connected. | `Panel.qml` |
 
 Upstream issue: <https://github.com/joryeugene/omarchy-calendar/issues/4>.
 
@@ -25,11 +25,10 @@ Upstream issue: <https://github.com/joryeugene/omarchy-calendar/issues/4>.
 - `Panel.qml`
   - `setCenterHoverRevealSuppressed` calls the host method when present and
     falls back to the writable property on older builds.
-  - The empty-state card counts connected accounts. With an account connected
-    it reads "NO EVENTS IN THIS PERIOD", points to Calendar settings and
-    "Refresh providers", and has an `X` close button. Account management,
-    including adding an account, stays in Settings; the Today and Week views
-    never offer it.
+  - The empty-state card only appears for states the user can act on: a helper
+    error, every calendar hidden, or no account connected yet. A connected
+    account with no events in the period shows nothing, so Today and Week match.
+    Account management, including adding an account, stays in Settings.
 - `Service.qml`
   - `helperPath` is resolved from the component's own location with
     `Qt.resolvedUrl("calendarctl")`, independent of the injected manifest.

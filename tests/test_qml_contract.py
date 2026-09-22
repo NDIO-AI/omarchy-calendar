@@ -103,7 +103,7 @@ class QmlContractTests(unittest.TestCase):
         self.assertIn('root.errorText !== "" ? "CALENDAR UNAVAILABLE"', panel)
         self.assertIn('root.errorText !== "" ? root.errorText', panel)
         self.assertIn('root.errorText !== "" ? "r  Try again"', panel)
-        self.assertIn('root.errorText !== "" ? "c  Calendar settings"', panel)
+        self.assertIn('root.errorText !== "" || root.filteredEmpty ? "c  Calendar settings"', panel)
 
     def test_header_labels_actions_before_their_keyboard_hints(self):
         panel = self.text("Panel.qml")
@@ -752,9 +752,9 @@ class QmlContractTests(unittest.TestCase):
 
     def test_empty_state_does_not_cover_an_open_event_draft(self):
         panel = self.text("Panel.qml")
+        self.assertIn("visible: root.showEmptyState", panel)
         self.assertIn(
-            "visible: !root.loading && root.events.length === 0 && !root.showSettings "
-            "&& !root.showSetup && !root.showEditor",
+            '&& (!root.hasConnectedAccount || root.errorText !== "" || root.filteredEmpty)',
             panel,
         )
 
@@ -772,14 +772,13 @@ class QmlContractTests(unittest.TestCase):
         self.assertIn('visible: root.provider === "google"', setup)
         self.assertIn("googleCredentialsDialog.open()", setup)
 
-    def test_empty_state_recognizes_connected_accounts_and_can_be_closed(self):
+    def test_connected_accounts_hide_the_empty_state_card(self):
         panel = self.text("Panel.qml")
         settings = self.text("SettingsView.qml")
-        self.assertIn("connectedAccountCount", panel)
         self.assertIn("hasConnectedAccount", panel)
-        self.assertIn('"NO EVENTS IN THIS PERIOD"', panel)
-        self.assertIn('root.hasConnectedAccount ? "c  Calendar settings"', panel)
-        self.assertIn("r  Refresh providers", panel)
+        self.assertIn("showEmptyState", panel)
+        self.assertIn("!root.hasConnectedAccount", panel)
+        self.assertNotIn("NO EVENTS IN THIS PERIOD", panel)
         self.assertIn('objectName: "emptyStateClose"', panel)
         self.assertIn('modelData.kind === "add" ? "Add account"', settings)
         self.assertNotIn("Add account", panel)

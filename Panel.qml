@@ -112,16 +112,18 @@ Panel {
     readonly property string contentFontFamily: bar ? bar.fontFamily : Style.font.family
     readonly property var events: CalendarModel.visibleCalendarEvents(cachedEvents, previewSettings.hiddenCalendars)
     readonly property bool filteredEmpty: cachedEvents.length > 0 && events.length === 0
-    readonly property int connectedAccountCount: {
-        var total = 0;
-        for (var i = 0; i < setupProviders.length; i++) {
-            var state = setupProviders[i];
-            if (state && state.connected)
-                total += Math.max(1, Number(state.accounts || 0));
-        }
-        return total;
+    readonly property bool hasConnectedAccount: {
+        for (var i = 0; i < setupProviders.length; i++)
+            if (setupProviders[i] && setupProviders[i].connected)
+                return true;
+        return false;
     }
-    readonly property bool hasConnectedAccount: connectedAccountCount > 0
+    // The empty-state card is only for states the user can act on: a helper
+    // error, every calendar hidden, or no account connected yet. A connected
+    // account with no events in the period shows nothing, matching Week.
+    readonly property bool showEmptyState: !root.loading && root.events.length === 0
+        && !root.showSettings && !root.showSetup && !root.showEditor
+        && (!root.hasConnectedAccount || root.errorText !== "" || root.filteredEmpty)
     readonly property var dayEvents: CalendarModel.eventsForDay(events, cursorDate)
     readonly property var weekEvents: CalendarModel.eventsForWeek(events, cursorDate)
     readonly property var visibleEvents: activeTab === "today" ? dayEvents : weekEvents
@@ -1411,10 +1413,10 @@ Panel {
                             onEnableEditingRequested: root.enableCopiedOriginalEditing()
                         }
                         Rectangle {
-                            visible: !root.loading && root.events.length === 0 && !root.showSettings && !root.showSetup && !root.showEditor
+                            visible: root.showEmptyState
                             anchors.centerIn: parent
                             width: Style.space(560)
-                            height: Style.space(root.hasConnectedAccount && root.errorText === "" ? 272 : 240)
+                            height: Style.space(240)
                             radius: Style.space(12)
                             color: root.palette.surface
                             border.color: root.errorText !== "" ? root.palette.urgent : root.palette.border
@@ -1451,7 +1453,7 @@ Panel {
                                 spacing: Style.space(14)
                                 Text {
                                     textFormat: Text.PlainText
-                                    text: root.errorText !== "" ? "CALENDAR UNAVAILABLE" : root.filteredEmpty ? "NO VISIBLE EVENTS" : root.hasConnectedAccount ? "NO EVENTS IN THIS PERIOD" : "YOUR CALENDAR COCKPIT IS READY"
+                                    text: root.errorText !== "" ? "CALENDAR UNAVAILABLE" : root.filteredEmpty ? "NO VISIBLE EVENTS" : "YOUR CALENDAR COCKPIT IS READY"
                                     color: root.errorText !== "" ? root.palette.urgent : root.palette.accent
                                     font.family: root.contentFontFamily
                                     font.pixelSize: Style.font.title * root.textScale
@@ -1460,7 +1462,7 @@ Panel {
                                 Text {
                                     textFormat: Text.PlainText
                                     width: parent.width
-                                    text: root.errorText !== "" ? root.errorText : root.filteredEmpty ? "Every cached calendar in this period is hidden. Open Calendar settings to show one or more." : root.hasConnectedAccount ? String(root.connectedAccountCount) + (root.connectedAccountCount === 1 ? " account is connected. There are no events in this period. Use [ and ] to change it." : " accounts are connected. There are no events in this period. Use [ and ] to change it.") : "Connect Google Calendar or Outlook in Settings. Read-only access is the default."
+                                    text: root.errorText !== "" ? root.errorText : root.filteredEmpty ? "Every cached calendar in this period is hidden. Open Calendar settings to show one or more." : "Connect Google Calendar or Outlook in Settings. Read-only access is the default."
                                     color: root.palette.foreground
                                     font.family: root.contentFontFamily
                                     font.pixelSize: Style.font.bodySmall * root.textScale
@@ -1474,7 +1476,7 @@ Panel {
                                     Text {
                                         textFormat: Text.PlainText
                                         anchors.centerIn: parent
-                                        text: root.errorText !== "" ? "r  Try again" : root.filteredEmpty ? "c  Calendar visibility" : root.hasConnectedAccount ? "c  Calendar settings" : "c  Connect calendars"
+                                        text: root.errorText !== "" ? "r  Try again" : root.filteredEmpty ? "c  Calendar visibility" : "c  Connect calendars"
                                         color: root.palette.background
                                         font.family: root.contentFontFamily
                                         font.pixelSize: Style.font.bodySmall * root.textScale
@@ -1495,7 +1497,7 @@ Panel {
                                     Text {
                                         textFormat: Text.PlainText
                                         anchors.centerIn: parent
-                                        text: root.errorText !== "" ? "c  Calendar settings" : root.hasConnectedAccount ? "r  Refresh providers" : "Load fictional demo data"
+                                        text: root.errorText !== "" || root.filteredEmpty ? "c  Calendar settings" : "Load fictional demo data"
                                         color: root.palette.foreground
                                         font.family: root.contentFontFamily
                                         font.pixelSize: Style.font.caption * root.textScale
@@ -1503,7 +1505,7 @@ Panel {
                                     }
                                     MouseArea {
                                         anchors.fill: parent
-                                        onClicked: root.errorText !== "" ? root.openSettings(0) : root.hasConnectedAccount ? root.refreshProviders() : root.seedDemo()
+                                        onClicked: root.errorText !== "" || root.filteredEmpty ? root.openSettings(0) : root.seedDemo()
                                     }
                                 }
                             }
